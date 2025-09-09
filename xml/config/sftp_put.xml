@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<config>
+    <put>
+        <enabled encrypted="false">true</enabled>
+        <gui encrypted="false">0c5da7bc-a5b2-47b2-89af-67c37701654a</gui>
+        <title encrypted="false">Auto Put from Local Folder to Remote Folder</title>
+        <localDir encrypted="false">./send</localDir>
+        <localFileMask encrypted="false">*.xml</localFileMask>
+        <backupEnabled encrypted="false">true</backupEnabled>
+        <backupDir encrypted="false">./backups</backupDir>
+        <backupRetention encrypted="false">7</backupRetention>
+        <pollFrequencySeconds encrypted="false">5</pollFrequencySeconds>
+        <remoteDir encrypted="false">/remote</remoteDir>
+        <tempFileExtension encrypted="false">.tmp</tempFileExtension>
+    </put>
+</config>

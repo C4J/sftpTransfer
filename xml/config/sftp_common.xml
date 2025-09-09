@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<config>
+    <settings>
+        <title encrypted="false">SFTP Transfer Example</title>
+        <emailEnabled encrypted="false">false</emailEnabled>
+        <remoteHost encrypted="false">10.0.0.35</remoteHost>
+        <remotePort encrypted="false">2222</remotePort>
+        <checkKnownHosts encrypted="false">true</checkKnownHosts>
+        <knownHostsFile encrypted="false">./ssh/known_hosts</knownHostsFile>
+        <autoAddtoKnownHostsFile encrypted="false">false</autoAddtoKnownHostsFile>
+        <authType encrypted="false">user password</authType>
+        <username encrypted="false">sftpput_test</username>
+        <password encrypted="true">wxyYBlOe4gzJ+gSNHCgBMQ==</password>
+        <checkPrivateKeyFile encrypted="false">false</checkPrivateKeyFile>
+        <privateKeyFile encrypted="false">./ssh/sftpTransfer.pem</privateKeyFile>
+        <privateKeyComment encrypted="false">sftpTransfer</privateKeyComment>
+        <publicKeyFile encrypted="false">./ssh/sftpTransfer.pub</publicKeyFile>
+        <privateKeyPasswordProtected encrypted="false">false</privateKeyPasswordProtected>
+        <privateKeyPassword encrypted="true">eRmJYFmUntXOKIMM89P0ZQ==</privateKeyPassword>
+        <applicationPassword encrypted="true">eRmJYFmUntXOKIMM89P0ZQ==</applicationPassword>
+    </settings>
+</config>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<jsch>
+    <properties>
+        <property enabled="true" encrypted="false" id="StrictKex" value="true"/>
+        <property enabled="true" encrypted="false" id="compression.s2c" value="zlib@openssh.com,zlib,none"/>
+        <property enabled="true" encrypted="false" id="compression.c2s" value="zlib@openssh.com,zlib,none"/>
+        <property enabled="true" encrypted="false" id="StrictHostKeyChecking" value="yes"/>
+        <property enabled="true" encrypted="false" id="PreferredAuthentications" value="gssapi-with-mic,publickey,keyboard-interactive,password"/>
+        <property enabled="true" encrypted="false" id="CheckKexes" value="diffie-hellman-group1-sha1"/>
+        <property enabled="true" encrypted="false" id="mac.s2c" value="hmac-sha2-256,hmac-sha1"/>
+        <property enabled="true" encrypted="false" id="mac.c2s" value="hmac-sha2-256,hmac-sha1"/>
+        <property enabled="true" encrypted="false" id="proxy.http" value=""/>
+        <property enabled="true" encrypted="false" id="proxy.socks5" value=""/>
+        <property enabled="true" encrypted="false" id="cipher.s2c" value="aes128-ctr,aes192-ctr,aes256-ctr"/>
+        <property enabled="true" encrypted="false" id="cipher.c2s" value="aes128-ctr,aes192-ctr,aes256-ctr"/>
+        <property enabled="true" encrypted="false" id="CheckMacs" value="hmac-md5"/>
+        <property enabled="true" encrypted="false" id="CheckCiphers" value="aes256-cbc,aes192-cbc"/>
+        <property enabled="true" encrypted="false" id="kex" value="diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha256"/>
+        <property enabled="true" encrypted="false" id="server_host_key" value="ssh-rsa,ssh-ed25519,ecdsa-sha2-nistp256"/>
+    </properties>
+</jsch>

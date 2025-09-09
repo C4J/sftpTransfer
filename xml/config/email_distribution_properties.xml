@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<emailSettings>
+    <distributionList enabled="false" id="sftpPut" maxFrequencyMins="5" value="demo@email.com"/>
+    <distributionList enabled="false" id="Monitor" maxFrequencyMins="5" value="demo@email.com"/>
+    <distributionList enabled="false" id="sftpGet" maxFrequencyMins="5" value="demo@email.com"/>
+    <distributionList enabled="false" id="Stats" maxFrequencyMins="5" value="demo@email.com"/>
+    <distributionList enabled="false" id="Error" maxFrequencyMins="5" value="demo@email.com"/>
+</emailSettings>

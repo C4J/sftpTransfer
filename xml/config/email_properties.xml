@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<emailSettings>
+    <configuration>
+        <property enabled="true" encrypted="false" name="mail.smtp.user" value="demo@email.com"/>
+        <property enabled="true" encrypted="false" name="mail.debug" value="false"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.socketFactory.class" value="javax.net.ssl.SSLSocketFactory"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.port" value="587"/>
+        <property enabled="true" encrypted="true" name="mail.smtp.password" value="g02Ejh69Z/CTgFc2ucGUENwaVc32UCRZyntHyOmoOE0="/>
+        <property enabled="true" encrypted="false" name="mail.smtp.starttls.enable" value="true"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.auth" value="true"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.from" value="demo@email.com"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.host" value="smtp.demo.com"/>
+        <property enabled="true" encrypted="false" name="mail.smtp.socketFactory.port" value="587"/>
+    </configuration>
+</emailSettings>
