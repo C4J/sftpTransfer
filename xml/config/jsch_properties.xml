@@ -4,7 +4,7 @@
         <property enabled="true" encrypted="false" id="StrictKex" value="true"/>
         <property enabled="true" encrypted="false" id="compression.s2c" value="zlib@openssh.com,zlib,none"/>
         <property enabled="true" encrypted="false" id="compression.c2s" value="zlib@openssh.com,zlib,none"/>
-        <property enabled="true" encrypted="false" id="StrictHostKeyChecking" value="yes"/>
+        <property enabled="true" encrypted="false" id="StrictHostKeyChecking" value="no"/>
         <property enabled="true" encrypted="false" id="PreferredAuthentications" value="gssapi-with-mic,publickey,keyboard-interactive,password"/>
         <property enabled="true" encrypted="false" id="CheckKexes" value="diffie-hellman-group1-sha1"/>
         <property enabled="true" encrypted="false" id="mac.s2c" value="hmac-sha2-256,hmac-sha1"/>

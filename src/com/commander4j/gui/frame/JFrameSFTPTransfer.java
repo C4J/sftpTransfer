@@ -31,6 +31,7 @@ import javax.swing.JSeparator;
 import javax.swing.JTabbedPane;
 import javax.swing.JToolBar;
 import javax.swing.ScrollPaneConstants;
+import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
@@ -818,21 +819,36 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_BackupRetention_Put.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_BackupRetention_Put.setBounds(6, 160, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_BackupRetention_Put);
+		
+		JLabel4j_std lbl_BackupRetentionUnit_Put = new JLabel4j_std("Days");
+		lbl_BackupRetentionUnit_Put.setBounds(240, 160, 63, 27);
+		sftp_put_Tab_Panel.add(lbl_BackupRetentionUnit_Put);
 
+		
+		int backupRetention_Put = Integer.parseInt(settingsPut.backupRetention.data);
+		SpinnerNumberModel backupRetentionModel_Put =  new SpinnerNumberModel(backupRetention_Put,0,365,1);
+		
 		spinner_BackupRetention_Put = new JSpinner4j();
 		spinner_BackupRetention_Put.setBounds(161, 160, 67, 23);
-		spinner_BackupRetention_Put.setValue(Integer.valueOf(settingsPut.backupRetention.data));
 		sftp_put_Tab_Panel.add(spinner_BackupRetention_Put);
+		spinner_BackupRetention_Put.setModel(backupRetentionModel_Put);
 
+		int pollingFrequency_Put = Integer.parseInt(settingsPut.pollFrequencySeconds.data);
+		SpinnerNumberModel pollingFrequencyModel_Put =  new SpinnerNumberModel(pollingFrequency_Put,0,365,1);
+		
 		spinner_PollFrequency_Put = new JSpinner4j();
 		spinner_PollFrequency_Put.setBounds(161, 190, 67, 23);
-		spinner_PollFrequency_Put.setValue(Integer.valueOf(settingsPut.pollFrequencySeconds.data));
 		sftp_put_Tab_Panel.add(spinner_PollFrequency_Put);
+		spinner_PollFrequency_Put.setModel(pollingFrequencyModel_Put);
 
 		JLabel4j_std lbl_PollFrequency_Put = new JLabel4j_std("Poll Frequency");
 		lbl_PollFrequency_Put.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_PollFrequency_Put.setBounds(6, 190, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_PollFrequency_Put);
+		
+		JLabel4j_std lbl_PollFrequencyUnit_Put = new JLabel4j_std("Seconds");
+		lbl_PollFrequencyUnit_Put.setBounds(240, 190, 63, 27);
+		sftp_put_Tab_Panel.add(lbl_PollFrequencyUnit_Put);
 
 		fld_RemoteFolder_Put = new JTextField4j();
 		fld_RemoteFolder_Put.setBounds(161, 220, 489, 23);
@@ -920,15 +936,23 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_RemoteMask_Get.setBounds(6, 100, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_RemoteMask_Get);
 
+		int pollingFrequency_Get = Integer.parseInt(settingsGet.pollFrequencySeconds.data);
+		SpinnerNumberModel pollingFrequencyModel_Get =  new SpinnerNumberModel(pollingFrequency_Get,0,365,1);
+		
 		spinner_PollFrequency_Get = new JSpinner4j();
 		spinner_PollFrequency_Get.setBounds(161, 130, 67, 23);
-		spinner_PollFrequency_Get.setValue(Integer.valueOf(settingsGet.pollFrequencySeconds.data));
 		sftp_get_Tab_Panel.add(spinner_PollFrequency_Get);
+		spinner_PollFrequency_Get.setModel(pollingFrequencyModel_Get);
 
 		JLabel4j_std lbl_PollFrequency_Get = new JLabel4j_std("Poll Frequency");
 		lbl_PollFrequency_Get.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_PollFrequency_Get.setBounds(6, 130, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_PollFrequency_Get);
+		
+		JLabel4j_std lbl_PollFrequencyUnit_Get = new JLabel4j_std("Seconds");
+		lbl_PollFrequencyUnit_Get.setHorizontalAlignment(SwingConstants.LEADING);
+		lbl_PollFrequencyUnit_Get.setBounds(246, 130, 57, 27);
+		sftp_get_Tab_Panel.add(lbl_PollFrequencyUnit_Get);
 
 		fld_Title_Get = new JTextField4j();
 		fld_Title_Get.setBounds(161, 40, 489, 23);

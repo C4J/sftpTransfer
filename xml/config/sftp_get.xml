@@ -2,11 +2,9 @@
 <config>
     <get>
         <enabled encrypted="false">true</enabled>
-        <gui encrypted="false">daa3e5e2-d17a-445c-baec-3565de93f739</gui>
-        <title encrypted="false">Auto Get from Remote Folder to Local Folder</title>
         <remoteDir encrypted="false">/remote</remoteDir>
         <remoteFileMask encrypted="false">*.xml</remoteFileMask>
-        <pollFrequencySeconds encrypted="false">5</pollFrequencySeconds>
+        <pollFrequencySeconds encrypted="false">10</pollFrequencySeconds>
         <localDir encrypted="false">./receive</localDir>
         <tempFileExtension encrypted="false">.tmp</tempFileExtension>
     </get>
