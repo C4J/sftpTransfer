@@ -2,7 +2,7 @@
 <config>
     <settings>
         <title encrypted="false">SFTP Transfer Example</title>
-        <emailEnabled encrypted="false">true</emailEnabled>
+        <emailEnabled encrypted="false">false</emailEnabled>
         <remoteHost encrypted="false">10.0.0.35</remoteHost>
         <remotePort encrypted="false">2222</remotePort>
         <checkKnownHosts encrypted="false">true</checkKnownHosts>
