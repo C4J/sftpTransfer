@@ -32,7 +32,7 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "5.02";
+	public static String version = "5.10";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;
@@ -72,11 +72,11 @@ public class Start
 			if (args[0].equals("desktop"))
 			{
 				gui = new JFrameSFTPTransfer();
-				
-	
+
+
 				putThreadRunMode = TransferPUT.Mode_PAUSE;
-				
-				getThreadRunMode = TransferGET.Mode_PAUSE;				
+
+				getThreadRunMode = TransferGET.Mode_PAUSE;
 			}
 
 			// No GUI in service mode
@@ -84,20 +84,20 @@ public class Start
 			{
 				ShutdownHook shutdownHook = new ShutdownHook();
 				Runtime.getRuntime().addShutdownHook(shutdownHook);
-				
+
 				putThreadRunMode = TransferPUT.Mode_RUN;
-				
+
 				getThreadRunMode = TransferGET.Mode_RUN;
 			}
 
 			putLogDestination = JschCommands.LogDestination_PUT;
-			
+
 			getLogDestination = JschCommands.LogDestination_GET;
-			
+
 			emailLogDestination = JschCommands.LogDestination_SYS;
-			
+
 			archiveLogDestination = JschCommands.LogDestination_SYS;
-			
+
 			// Start Services
 
 			emailthread = new EmailThread(emailLogDestination);
