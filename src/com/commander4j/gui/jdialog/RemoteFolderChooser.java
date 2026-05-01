@@ -72,7 +72,7 @@ public final class RemoteFolderChooser extends JDialog
 		pack();
 		setLocationRelativeTo(owner);
 		setMinimumSize(new Dimension(520, 420));
-		
+
 
 		int widthadjustment = util.getOSWidthAdjustment();
 		int heightadjustment = util.getOSHeightAdjustment();
@@ -172,8 +172,8 @@ public final class RemoteFolderChooser extends JDialog
 		JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 		okBtn = new JButton4j("OK");
 		cancelBtn = new JButton4j("Cancel");
-		okBtn.addActionListener(e -> onOk());
-		cancelBtn.addActionListener(e -> onCancel());
+		okBtn.addActionListener(_ -> onOk());
+		cancelBtn.addActionListener(_ -> onCancel());
 		buttons.add(okBtn);
 		buttons.add(cancelBtn);
 		add(buttons, BorderLayout.SOUTH);
