@@ -42,7 +42,9 @@ import com.commander4j.email.DistributionPanel;
 import com.commander4j.email.DistributionRecord;
 import com.commander4j.email.EmailPanel;
 import com.commander4j.email.EmailRecord;
+import com.commander4j.gui.jdialog.JDialogAbout;
 import com.commander4j.gui.jdialog.JDialogAssignPassword;
+import com.commander4j.gui.jdialog.JDialogLicenses;
 import com.commander4j.gui.jdialog.JDialogPassword;
 import com.commander4j.gui.widgets.JButton4j;
 import com.commander4j.gui.widgets.JCheckBox4j;
@@ -1142,6 +1144,32 @@ public class JFrameSFTPTransfer extends JFrame
 		});
 		btn_Help.setPreferredSize(btn);
 		toolBarRight.add(btn_Help);
+
+		JButton4j btn_About = new JButton4j(Common.icon_about);
+		btn_About.setToolTipText("About");
+		btn_About.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				JDialogAbout about = new JDialogAbout();
+				about.setVisible(true);
+			}
+		});
+		btn_About.setPreferredSize(btn);
+		toolBarRight.add(btn_About);
+
+		JButton4j btn_License = new JButton4j(Common.icon_license);
+		btn_License.setToolTipText("Licences");
+		btn_License.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				JDialogLicenses dl = new JDialogLicenses(JFrameSFTPTransfer.this);
+				dl.setVisible(true);
+			}
+		});
+		btn_License.setPreferredSize(btn);
+		toolBarRight.add(btn_License);
 
 		JButton4j btn_Close = new JButton4j(Common.icon_exit);
 		btn_Close.addActionListener(new ActionListener()
