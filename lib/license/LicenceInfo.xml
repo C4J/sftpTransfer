@@ -42,7 +42,7 @@
 
         <library>
             <description>Bouncy Castle</description>
-            <version>1.83</version>
+            <version>1.84</version>
             <type>MIT License</type>
         </library>
 

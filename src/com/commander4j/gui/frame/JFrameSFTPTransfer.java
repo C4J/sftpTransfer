@@ -245,7 +245,7 @@ public class JFrameSFTPTransfer extends JFrame
 		email_Tab_Panel = new JPanel();
 		email_Tab_Panel.setLayout(null);
 		email_Tab_Panel.setBorder(null);
-		
+
 
 		panel_Log_Put_Scrollable = new JLogPanel();
 		panel_Log_Put_Scrollable.setVisible(true);
@@ -260,14 +260,14 @@ public class JFrameSFTPTransfer extends JFrame
 
 		scrollPane_Get_Log = new JScrollPane(panel_Log_Get_Scrollable);
 		scrollPane_Get_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-		
+
 		panel_Log_System_Scrollable = new JLogPanel();
 		panel_Log_System_Scrollable.setVisible(true);
 		panel_Log_System_Scrollable.setLayout(new BoxLayout(panel_Log_System_Scrollable,BoxLayout.PAGE_AXIS));
-		
+
 		scrollPane_System_Log = new JScrollPane(panel_Log_System_Scrollable);
 		scrollPane_System_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-		
+
 		setSize(new Dimension(740, 570));
 
 		contentPane = new JPanel();
@@ -326,11 +326,11 @@ public class JFrameSFTPTransfer extends JFrame
 			}
 		});
 
-		tabbedPane.addTab("SFTP", null, (Component) sftp_common_Tab_Panel, "SFTP Settings");
-		tabbedPane.addTab("Put Properties", null, (Component) sftp_put_Tab_Panel, "SFTP Put Settings");
-		tabbedPane.addTab("Get Properties", null, (Component) sftp_get_Tab_Panel, "SFTP Get Settings");
-		tabbedPane.addTab("jsch Properties", null, (Component) propertes_Tab_Panel, "SFTP Put");
-		tabbedPane.addTab("Email Properties", null, (Component) email_Tab_Panel, "Email Settings");
+		tabbedPane.addTab("SFTP", null, sftp_common_Tab_Panel, "SFTP Settings");
+		tabbedPane.addTab("Put Properties", null, sftp_put_Tab_Panel, "SFTP Put Settings");
+		tabbedPane.addTab("Get Properties", null, sftp_get_Tab_Panel, "SFTP Get Settings");
+		tabbedPane.addTab("jsch Properties", null, propertes_Tab_Panel, "SFTP Put");
+		tabbedPane.addTab("Email Properties", null,email_Tab_Panel, "Email Settings");
 		tabbedPane.addTab("Put Log", null, scrollPane_Put_Log, "Put Activity Log");
 		tabbedPane.addTab("Get Log", null, scrollPane_Get_Log, "Get Activity Log");
 		tabbedPane.addTab("System Log",null,scrollPane_System_Log,"System Log");
@@ -661,7 +661,7 @@ public class JFrameSFTPTransfer extends JFrame
 						if (testPrivateKeyFile.isFile())
 						{
 							fld_PrivateKeyFile_Common.requestFocus();
-							
+
 							displayMessage("Danger - do you want to overwrite the existing private key ?", messageType_WARN);
 
 							int confirm = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Overwrite " + fld_PrivateKeyFile_Common.getText() + " ?", "Confirm", JOptionPane.YES_NO_OPTION);
@@ -675,16 +675,16 @@ public class JFrameSFTPTransfer extends JFrame
 						if (testPrivateKeyFile.isDirectory())
 						{
 							proceed = false;
-							
+
 							fld_PrivateKeyFile_Common.requestFocus();
-							
+
 							displayMessage("You need to specify a filename for the private key file .pem", messageType_ERROR);
 
 							JOptionPane.showMessageDialog(JFrameSFTPTransfer.this, fld_PrivateKeyFile_Common.getText() + " is a directory !", "Error", JOptionPane.ERROR_MESSAGE);
 						}
 					}
 				}
-				
+
 				if (proceed)
 				{
 					File testPublicKeyFile = new File(fld_PublicKeyFile_Common.getText());
@@ -694,7 +694,7 @@ public class JFrameSFTPTransfer extends JFrame
 						if (testPublicKeyFile.isFile())
 						{
 							fld_PublicKeyFile_Common.requestFocus();
-							
+
 							displayMessage("Danger - do you want to overwrite the existing private key ?", messageType_WARN);
 
 							int confirm = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Overwrite " + fld_PublicKeyFile_Common.getText() + " ?", "Confirm", JOptionPane.YES_NO_OPTION);
@@ -708,9 +708,9 @@ public class JFrameSFTPTransfer extends JFrame
 						if (testPublicKeyFile.isDirectory())
 						{
 							proceed = false;
-							
+
 							fld_PublicKeyFile_Common.requestFocus();
-							
+
 							displayMessage("You need to specify a filename for the public key file .pub", messageType_ERROR);
 
 							JOptionPane.showMessageDialog(JFrameSFTPTransfer.this, fld_PublicKeyFile_Common.getText() + " is a directory !", "Error", JOptionPane.ERROR_MESSAGE);
@@ -821,15 +821,15 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_BackupRetention_Put.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_BackupRetention_Put.setBounds(6, 160, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_BackupRetention_Put);
-		
+
 		JLabel4j_std lbl_BackupRetentionUnit_Put = new JLabel4j_std("Days");
 		lbl_BackupRetentionUnit_Put.setBounds(240, 160, 63, 27);
 		sftp_put_Tab_Panel.add(lbl_BackupRetentionUnit_Put);
 
-		
+
 		int backupRetention_Put = Integer.parseInt(settingsPut.backupRetention.data);
 		SpinnerNumberModel backupRetentionModel_Put =  new SpinnerNumberModel(backupRetention_Put,0,365,1);
-		
+
 		spinner_BackupRetention_Put = new JSpinner4j();
 		spinner_BackupRetention_Put.setBounds(161, 160, 67, 23);
 		sftp_put_Tab_Panel.add(spinner_BackupRetention_Put);
@@ -837,7 +837,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		int pollingFrequency_Put = Integer.parseInt(settingsPut.pollFrequencySeconds.data);
 		SpinnerNumberModel pollingFrequencyModel_Put =  new SpinnerNumberModel(pollingFrequency_Put,0,365,1);
-		
+
 		spinner_PollFrequency_Put = new JSpinner4j();
 		spinner_PollFrequency_Put.setBounds(161, 190, 67, 23);
 		sftp_put_Tab_Panel.add(spinner_PollFrequency_Put);
@@ -847,7 +847,7 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_PollFrequency_Put.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_PollFrequency_Put.setBounds(6, 190, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_PollFrequency_Put);
-		
+
 		JLabel4j_std lbl_PollFrequencyUnit_Put = new JLabel4j_std("Seconds");
 		lbl_PollFrequencyUnit_Put.setBounds(240, 190, 63, 27);
 		sftp_put_Tab_Panel.add(lbl_PollFrequencyUnit_Put);
@@ -940,7 +940,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		int pollingFrequency_Get = Integer.parseInt(settingsGet.pollFrequencySeconds.data);
 		SpinnerNumberModel pollingFrequencyModel_Get =  new SpinnerNumberModel(pollingFrequency_Get,0,365,1);
-		
+
 		spinner_PollFrequency_Get = new JSpinner4j();
 		spinner_PollFrequency_Get.setBounds(161, 130, 67, 23);
 		sftp_get_Tab_Panel.add(spinner_PollFrequency_Get);
@@ -950,7 +950,7 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_PollFrequency_Get.setHorizontalAlignment(SwingConstants.TRAILING);
 		lbl_PollFrequency_Get.setBounds(6, 130, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_PollFrequency_Get);
-		
+
 		JLabel4j_std lbl_PollFrequencyUnit_Get = new JLabel4j_std("Seconds");
 		lbl_PollFrequencyUnit_Get.setHorizontalAlignment(SwingConstants.LEADING);
 		lbl_PollFrequencyUnit_Get.setBounds(246, 130, 57, 27);
@@ -1117,13 +1117,13 @@ public class JFrameSFTPTransfer extends JFrame
 
 				writeToSystemLog("Saving email properties to email_properties.xml",JLogPanel.INFO);
 				settingsUtil.saveEmailPropertiesToXml(emailConfig);
-				
+
 				writeToSystemLog("Saving email distribution lists to email_distribution_properties.xml",JLogPanel.INFO);
 				settingsUtil.saveEmailDistributionListToXml(distConfig);
-				
+
 				writeToSystemLog("Saving Java jsch library properties to jsch_properties.xml",JLogPanel.INFO);
 				settingsUtil.saveJschPropertiesToXml(jschConfig);
-				
+
 				writeToSystemLog("Notifying threads of new configuration.",JLogPanel.INFO);
 				Start.emailthread.loadSmtpPropertie();
 				Start.transferPut.requestMode(TransferPUT.Mode_CONFIG_UPDATE);
@@ -1342,7 +1342,7 @@ public class JFrameSFTPTransfer extends JFrame
 		}
 
 	}
-	
+
 	public void writeToLog(int logDestination,String logdata, int level)
 	{
 		switch (logDestination)
@@ -1404,14 +1404,14 @@ public class JFrameSFTPTransfer extends JFrame
 			panel_Log_Get_Scrollable.repaint();
 		});
 	}
-	
+
 	private void writeToSystemLog(String logdata, int level)
 	{
 		actualSystemLogRows++;
-		
+
 
 		SwingUtilities.invokeLater(() -> {
-			
+
 			panel_Log_System_Scrollable.addLog(logdata,level);
 
 			if (actualSystemLogRows > maxLogRows)
