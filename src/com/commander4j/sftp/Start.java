@@ -24,7 +24,7 @@ import com.commander4j.util.JWait;
 public class Start
 {
 
-	public Logger logger = org.apache.logging.log4j.LogManager.getLogger((TransferPUT.class));
+	public Logger logger = org.apache.logging.log4j.LogManager.getLogger((Start.class));
 
 	public LoggerContextFactory factory = LogManager.getFactory();
 

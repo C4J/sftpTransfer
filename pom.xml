@@ -24,6 +24,13 @@
 		    <version>1.84</version>
 		</dependency>
 
+		<!-- Source: https://mvnrepository.com/artifact/org.bouncycastle/bcutil-jdk18on -->
+		<dependency>
+		    <groupId>org.bouncycastle</groupId>
+		    <artifactId>bcutil-jdk18on</artifactId>
+		    <version>1.84</version>
+		</dependency>
+
 		<!-- Source: https://mvnrepository.com/artifact/commons-codec/commons-codec -->
 		<dependency>
 		    <groupId>commons-codec</groupId>
@@ -60,6 +67,13 @@
 		    <artifactId>log4j-api</artifactId>
 		    <version>2.25.4</version>
 		    <scope>compile</scope>
+		</dependency>
+
+		<!-- Source: https://mvnrepository.com/artifact/org.slf4j/slf4j-api -->
+		<dependency>
+		    <groupId>org.slf4j</groupId>
+		    <artifactId>slf4j-api</artifactId>
+		    <version>2.0.17</version>
 		</dependency>
 
 		<!-- https://mvnrepository.com/artifact/com.jcraft/jzlib -->
@@ -111,13 +125,6 @@
 			<artifactId>asn-one</artifactId>
 			<version>0.6.0</version>
 			<scope>runtime</scope>
-		</dependency>
-
-		<!-- https://mvnrepository.com/artifact/net.i2p.crypto/eddsa -->
-		<dependency>
-			<groupId>net.i2p.crypto</groupId>
-			<artifactId>eddsa</artifactId>
-			<version>0.3.0</version>
 		</dependency>
 
 	</dependencies>

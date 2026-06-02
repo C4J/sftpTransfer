@@ -11,7 +11,6 @@
 	<classpathentry kind="lib" path="lib/asn-one-0.6.0.jar"/>
 	<classpathentry kind="lib" path="lib/commons-codec-1.21.0.jar"/>
 	<classpathentry kind="lib" path="lib/commons-io-2.21.0.jar"/>
-	<classpathentry kind="lib" path="lib/eddsa-0.3.0.jar"/>
 	<classpathentry kind="lib" path="lib/jakarta.activation-api-2.1.4.jar"/>
 	<classpathentry kind="lib" path="lib/jakarta.mail-api-2.1.5.jar"/>
 	<classpathentry kind="lib" path="lib/jsch-2.27.9.jar"/>
