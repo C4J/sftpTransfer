@@ -17,7 +17,7 @@
 			</Policies>
 			<DefaultRolloverStrategy max="100">
 				<Delete basePath="${LOG_DIR}" maxDepth="1">
-					<IfFileName glob="SFTPSend-*.log.gz"/>
+					<IfFileName glob="sftpTransfer-*.log.gz"/>
 					<IfLastModified age="P14D"/>
 				</Delete>
 			</DefaultRolloverStrategy>

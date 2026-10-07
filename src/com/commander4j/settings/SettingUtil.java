@@ -1,6 +1,7 @@
 package com.commander4j.settings;
 
 import java.io.File;
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.UUID;
 
@@ -33,6 +34,37 @@ public class SettingUtil
 	JCipher cipher = new JCipher(EncryptData.key);
 
 	private JUtility util = new JUtility();
+
+	/**
+	 * An independent copy of a SettingsCommon, SettingsPut or SettingsGet, so
+	 * that the settings a thread is working with are not changed under it by
+	 * later edits on screen. Every SettingData field is copied, including any
+	 * added to those classes later.
+	 */
+	@SuppressWarnings("unchecked")
+	public <T> T copySettings(T settings)
+	{
+		try
+		{
+			T result = (T) settings.getClass().getDeclaredConstructor().newInstance();
+
+			for (Field field : settings.getClass().getFields())
+			{
+				if (field.getType() == SettingData.class)
+				{
+					SettingData from = (SettingData) field.get(settings);
+
+					field.set(result, new SettingData(from.data, from.encrypted));
+				}
+			}
+
+			return result;
+		}
+		catch (ReflectiveOperationException e)
+		{
+			throw new IllegalStateException(e);
+		}
+	}
 
 	public SettingsCommon readSFTPCommonFromXml()
 	{
@@ -204,6 +236,7 @@ public class SettingUtil
 							result.enabled.encrypted = encrypted;
 							break;
 						case "guid":
+						case "gui": // element name written by versions up to 6.04
 							result.guid.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.guid.encrypted = encrypted;
 							if (result.guid.data.equals(""))
@@ -224,6 +257,22 @@ public class SettingUtil
 						case "localFileMask":
 							result.localFileMask.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.localFileMask.encrypted = encrypted;
+							break;
+						case "includeSubFolders":
+							result.includeSubFolders.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.includeSubFolders.encrypted = encrypted;
+							break;
+						case "syncEnabled":
+							result.syncEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncEnabled.encrypted = encrypted;
+							break;
+						case "syncDeleteEnabled":
+							result.syncDeleteEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncDeleteEnabled.encrypted = encrypted;
+							break;
+						case "syncDeleteFoldersEnabled":
+							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncDeleteFoldersEnabled.encrypted = encrypted;
 							break;
 						case "backupEnabled":
 							result.backupEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
@@ -325,6 +374,7 @@ public class SettingUtil
 							result.enabled.encrypted = encrypted;
 							break;
 						case "guid":
+						case "gui": // element name written by versions up to 6.04
 							result.guid.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.guid.encrypted = encrypted;
 							if (result.guid.data.equals(""))
@@ -345,6 +395,22 @@ public class SettingUtil
 						case "remoteFileMask":
 							result.remoteFileMask.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.remoteFileMask.encrypted = encrypted;
+							break;
+						case "includeSubFolders":
+							result.includeSubFolders.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.includeSubFolders.encrypted = encrypted;
+							break;
+						case "syncEnabled":
+							result.syncEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncEnabled.encrypted = encrypted;
+							break;
+						case "syncDeleteEnabled":
+							result.syncDeleteEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncDeleteEnabled.encrypted = encrypted;
+							break;
+						case "syncDeleteFoldersEnabled":
+							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.syncDeleteFoldersEnabled.encrypted = encrypted;
 							break;
 						case "pollFrequencySeconds":
 							result.pollFrequencySeconds.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
@@ -447,8 +513,8 @@ public class SettingUtil
 			settingsElement.appendChild(password);
 
 			Element checkPrivateKeyFile = (Element) doc.createElement("checkPrivateKeyFile");
-			checkPrivateKeyFile.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.checkPrivateKeyFile.data, settings.privateKeyFile.encrypted)));
-			checkPrivateKeyFile.setAttribute("encrypted", settings.privateKeyFile.encrypted);
+			checkPrivateKeyFile.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.checkPrivateKeyFile.data, settings.checkPrivateKeyFile.encrypted)));
+			checkPrivateKeyFile.setAttribute("encrypted", settings.checkPrivateKeyFile.encrypted);
 			settingsElement.appendChild(checkPrivateKeyFile);
 
 			Element privateKeyFile = (Element) doc.createElement("privateKeyFile");
@@ -463,7 +529,7 @@ public class SettingUtil
 			
 			Element publicKeyFile = (Element) doc.createElement("publicKeyFile");
 			publicKeyFile.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.publicKeyFile.data, settings.publicKeyFile.encrypted)));
-			publicKeyFile.setAttribute("encrypted", settings.privateKeyFile.encrypted);
+			publicKeyFile.setAttribute("encrypted", settings.publicKeyFile.encrypted);
 			settingsElement.appendChild(publicKeyFile);
 
 			Element privateKeyPasswordProtected = (Element) doc.createElement("privateKeyPasswordProtected");
@@ -530,7 +596,7 @@ public class SettingUtil
 			enabled.setAttribute("encrypted", settings.enabled.encrypted);
 			settingsElement.appendChild(enabled);
 
-			Element guid = (Element) doc.createElement("gui");
+			Element guid = (Element) doc.createElement("guid");
 			if (settings.guid.data.equals(""))
 			{
 				uuid = UUID.randomUUID();
@@ -554,6 +620,26 @@ public class SettingUtil
 			localFileMask.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.localFileMask.data, settings.localFileMask.encrypted)));
 			localFileMask.setAttribute("encrypted", settings.localFileMask.encrypted);
 			settingsElement.appendChild(localFileMask);
+
+			Element includeSubFolders = (Element) doc.createElement("includeSubFolders");
+			includeSubFolders.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.includeSubFolders.data, settings.includeSubFolders.encrypted)));
+			includeSubFolders.setAttribute("encrypted", settings.includeSubFolders.encrypted);
+			settingsElement.appendChild(includeSubFolders);
+
+			Element syncEnabled = (Element) doc.createElement("syncEnabled");
+			syncEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncEnabled.data, settings.syncEnabled.encrypted)));
+			syncEnabled.setAttribute("encrypted", settings.syncEnabled.encrypted);
+			settingsElement.appendChild(syncEnabled);
+
+			Element syncDeleteEnabled = (Element) doc.createElement("syncDeleteEnabled");
+			syncDeleteEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteEnabled.data, settings.syncDeleteEnabled.encrypted)));
+			syncDeleteEnabled.setAttribute("encrypted", settings.syncDeleteEnabled.encrypted);
+			settingsElement.appendChild(syncDeleteEnabled);
+
+			Element syncDeleteFoldersEnabled = (Element) doc.createElement("syncDeleteFoldersEnabled");
+			syncDeleteFoldersEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteFoldersEnabled.data, settings.syncDeleteFoldersEnabled.encrypted)));
+			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
+			settingsElement.appendChild(syncDeleteFoldersEnabled);
 
 			Element backupEnabled = (Element) doc.createElement("backupEnabled");
 			backupEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.backupEnabled.data, settings.backupEnabled.encrypted)));
@@ -634,7 +720,7 @@ public class SettingUtil
 			enabled.setAttribute("encrypted", settings.enabled.encrypted);
 			settingsElement.appendChild(enabled);
 			
-			Element guid = (Element) doc.createElement("gui");
+			Element guid = (Element) doc.createElement("guid");
 			if (settings.guid.data.equals(""))
 			{
 				uuid = UUID.randomUUID();
@@ -658,6 +744,26 @@ public class SettingUtil
 			localFileMask.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.remoteFileMask.data, settings.remoteFileMask.encrypted)));
 			localFileMask.setAttribute("encrypted", settings.remoteFileMask.encrypted);
 			settingsElement.appendChild(localFileMask);
+
+			Element includeSubFolders = (Element) doc.createElement("includeSubFolders");
+			includeSubFolders.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.includeSubFolders.data, settings.includeSubFolders.encrypted)));
+			includeSubFolders.setAttribute("encrypted", settings.includeSubFolders.encrypted);
+			settingsElement.appendChild(includeSubFolders);
+
+			Element syncEnabled = (Element) doc.createElement("syncEnabled");
+			syncEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncEnabled.data, settings.syncEnabled.encrypted)));
+			syncEnabled.setAttribute("encrypted", settings.syncEnabled.encrypted);
+			settingsElement.appendChild(syncEnabled);
+
+			Element syncDeleteEnabled = (Element) doc.createElement("syncDeleteEnabled");
+			syncDeleteEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteEnabled.data, settings.syncDeleteEnabled.encrypted)));
+			syncDeleteEnabled.setAttribute("encrypted", settings.syncDeleteEnabled.encrypted);
+			settingsElement.appendChild(syncDeleteEnabled);
+
+			Element syncDeleteFoldersEnabled = (Element) doc.createElement("syncDeleteFoldersEnabled");
+			syncDeleteFoldersEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteFoldersEnabled.data, settings.syncDeleteFoldersEnabled.encrypted)));
+			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
+			settingsElement.appendChild(syncDeleteFoldersEnabled);
 
 			Element pollFrequencySeconds = (Element) doc.createElement("pollFrequencySeconds");
 			pollFrequencySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.pollFrequencySeconds.data, settings.pollFrequencySeconds.encrypted)));

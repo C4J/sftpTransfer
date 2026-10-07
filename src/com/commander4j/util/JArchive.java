@@ -2,13 +2,14 @@ package com.commander4j.util;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.stream.Stream;
 
 import org.apache.commons.io.FileUtils;
 
@@ -37,13 +38,14 @@ public class JArchive
 				// Calculate the cutoff instant
 				Instant cutoff = Instant.now().minus(days, ChronoUnit.DAYS);
 
-				try (DirectoryStream<Path> stream = Files.newDirectoryStream(folder))
+				// Backups of files sent from sub folders are held in matching sub folders.
+				try (Stream<Path> stream = Files.walk(folder))
 				{
-					for (Path entry : stream)
+					for (Path entry : (Iterable<Path>) stream::iterator)
 					{
 						if (Files.isRegularFile(entry))
 						{
-							if (entry.getFileName().endsWith(directoryValidation) == false)
+							if ((entry.getFileName().endsWith(directoryValidation) == false) && (JSafeFile.isSafeFile(entry.getFileName().toString()) == false))
 							{
 								FileTime lastModifiedTime = Files.getLastModifiedTime(entry);
 								Instant fileInstant = lastModifiedTime.toInstant();
@@ -56,7 +58,7 @@ public class JArchive
 						}
 					}
 				}
-				catch (IOException e)
+				catch (IOException | UncheckedIOException e)
 				{
 					e.printStackTrace();
 				}

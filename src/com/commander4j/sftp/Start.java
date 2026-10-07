@@ -32,7 +32,7 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "6.04";
+	public static String version = "6.10";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;
@@ -125,13 +125,15 @@ public class Start
 				gui.setVisible(true);
 			}
 
+			logger.info("sftpTransfer Started");
+
 		}
 		else
 		{
 			logger.info("sftpTransfer No Parameter Specified");
-		}
 
-		logger.info("sftpTransfer Stopped");
+			logger.info("sftpTransfer Stopped");
+		}
 	}
 
 	public static void requestServiceShutdown()
@@ -149,6 +151,7 @@ public class Start
 
 			waitforServicesShutdown();
 
+			LogManager.getLogger(Start.class).info("sftpTransfer Stopped");
 
 	}
 

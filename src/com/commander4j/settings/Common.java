@@ -66,7 +66,7 @@ public class Common
 	public final static Color color_textfield_foreground_disabled = Color.BLUE;
 	public final static Color color_textfield_background_disabled = new Color(241, 241, 241);
 	
-	public static String iconPath = "."+File.separator+"images"+File.separator+"appIcons"+File.separator;
+	public static String iconPath = "."+File.separator+"Images"+File.separator+"appIcons"+File.separator;
 	
 	public final static ImageIcon icon_connected = new ImageIcon(iconPath+"connected.png");
 	public final static ImageIcon icon_disconnected = new ImageIcon(iconPath+"disconnected.png");

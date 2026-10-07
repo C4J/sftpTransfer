@@ -2,8 +2,14 @@
 <config>
     <put>
         <enabled encrypted="false">true</enabled>
+        <guid encrypted="false">95f3c477-75d2-4f3f-a735-fd9d1d7cf690</guid>
+        <title encrypted="false"/>
         <localDir encrypted="false">./send</localDir>
         <localFileMask encrypted="false">*.xml</localFileMask>
+        <includeSubFolders encrypted="false">true</includeSubFolders>
+        <syncEnabled encrypted="false">true</syncEnabled>
+        <syncDeleteEnabled encrypted="false">true</syncDeleteEnabled>
+        <syncDeleteFoldersEnabled encrypted="false">false</syncDeleteFoldersEnabled>
         <backupEnabled encrypted="false">false</backupEnabled>
         <backupDir encrypted="false">./backups</backupDir>
         <backupRetention encrypted="false">4</backupRetention>

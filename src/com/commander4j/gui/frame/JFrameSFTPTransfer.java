@@ -3,6 +3,7 @@ package com.commander4j.gui.frame;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.GraphicsConfiguration;
 import java.awt.GraphicsDevice;
@@ -64,8 +65,8 @@ import com.commander4j.settings.SettingsCommon;
 import com.commander4j.settings.SettingsGet;
 import com.commander4j.settings.SettingsPut;
 import com.commander4j.sftp.Start;
-import com.commander4j.thread.TransferGET;
 import com.commander4j.thread.TransferPUT;
+import com.commander4j.util.JSafeFile;
 import com.commander4j.util.JUtility;
 
 public class JFrameSFTPTransfer extends JFrame
@@ -114,6 +115,10 @@ public class JFrameSFTPTransfer extends JFrame
 	private JSpinner4j spinner_BackupRetention_Put;
 	private JCheckBox4j checkBx_Enabled_Put;
 	private JCheckBox4j checkBx_BackupEnable_Put;
+	private JCheckBox4j checkBx_SubFolders_Put;
+	private JCheckBox4j checkBx_Sync_Put;
+	private JCheckBox4j checkBx_SyncDelete_Put;
+	private JCheckBox4j checkBx_SyncDeleteFolders_Put;
 	private JButton4j btn_BackupFolderSelect_Put;
 
 	private JTextField4j fld_Title_Get;
@@ -123,6 +128,10 @@ public class JFrameSFTPTransfer extends JFrame
 	private JTextField4j fld_TempFileExtension_Get;
 	private JSpinner4j spinner_PollFrequency_Get;
 	private JCheckBox4j checkBx_Enabled_Get;
+	private JCheckBox4j checkBx_SubFolders_Get;
+	private JCheckBox4j checkBx_Sync_Get;
+	private JCheckBox4j checkBx_SyncDelete_Get;
+	private JCheckBox4j checkBx_SyncDeleteFolders_Get;
 
 	// private JCheckBox chckbx_PrivateKeyPassword = new JCheckBox("");
 	private JCheckBox4j chckbx_PrivateKeyPassword_Common;
@@ -167,6 +176,29 @@ public class JFrameSFTPTransfer extends JFrame
 	private Dimension btn = new Dimension(32, 32);
 	private JSeparator seperator = new JSeparator();
 	private JschCommands jcmd = new JschCommands(JschCommands.LogDestination_NoGUI);
+
+	private boolean appliedSettingsSaved = true;
+
+	// Reports on the status line once the transfer threads have taken up settings handed to them.
+	private javax.swing.Timer applyTimer = new javax.swing.Timer(200, new ActionListener()
+	{
+		public void actionPerformed(ActionEvent e)
+		{
+			if ((Start.transferPut.isSettingsPending() == false) && (Start.transferGet.isSettingsPending() == false))
+			{
+				applyTimer.stop();
+
+				if (appliedSettingsSaved)
+				{
+					displayMessage("Settings saved and applied.", messageType_INFO);
+				}
+				else
+				{
+					displayMessage("Settings applied but not saved - a restart returns to the saved settings.", messageType_WARN);
+				}
+			}
+		}
+	});
 
 	public JFrameSFTPTransfer()
 	{
@@ -456,7 +488,7 @@ public class JFrameSFTPTransfer extends JFrame
 		comboBox_Authentication_Type_Common = new JComboBox4j<String>();
 		comboBox_Authentication_Type_Common.setModel(new DefaultComboBoxModel<String>(new String[]
 		{ "user password", "user public key" }));
-		comboBox_Authentication_Type_Common.setSelectedItem(settingsCommon.authType);
+		comboBox_Authentication_Type_Common.setSelectedItem(settingsCommon.authType.data);
 		comboBox_Authentication_Type_Common.setBounds(161, 160, 184, 23);
 		sftp_common_Tab_Panel.add(comboBox_Authentication_Type_Common);
 
@@ -788,7 +820,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(fld_Title_Put);
 
 		fld_LocalFolder_Put = new JTextField4j();
-		fld_LocalFolder_Put.setBounds(161, 70, 489, 23);
+		fld_LocalFolder_Put.setBounds(161, 70, 429, 23);
 		fld_LocalFolder_Put.setText(settingsPut.localDir.data);
 		sftp_put_Tab_Panel.add(fld_LocalFolder_Put);
 
@@ -853,7 +885,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(lbl_PollFrequencyUnit_Put);
 
 		fld_RemoteFolder_Put = new JTextField4j();
-		fld_RemoteFolder_Put.setBounds(161, 220, 489, 23);
+		fld_RemoteFolder_Put.setBounds(161, 220, 429, 23);
 		fld_RemoteFolder_Put.setText(settingsPut.remoteDir.data);
 		sftp_put_Tab_Panel.add(fld_RemoteFolder_Put);
 
@@ -872,6 +904,77 @@ public class JFrameSFTPTransfer extends JFrame
 		fld_TempFileExtension_Put.setText(settingsPut.tempFileExtension.data);
 		sftp_put_Tab_Panel.add(fld_TempFileExtension_Put);
 
+		JLabel4j_std lbl_SubFolders_Put = new JLabel4j_std("Include Sub Folders");
+		lbl_SubFolders_Put.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SubFolders_Put.setBounds(6, 280, 143, 27);
+		sftp_put_Tab_Panel.add(lbl_SubFolders_Put);
+
+		checkBx_SubFolders_Put = new JCheckBox4j("");
+		checkBx_SubFolders_Put.setSelected(Boolean.valueOf(settingsPut.includeSubFolders.data));
+		checkBx_SubFolders_Put.setBounds(161, 280, 23, 23);
+		sftp_put_Tab_Panel.add(checkBx_SubFolders_Put);
+
+		JLabel4j_std lbl_SubFoldersHint_Put = new JLabel4j_std("Also send files from folders beneath the local folder");
+		lbl_SubFoldersHint_Put.setBounds(196, 280, 454, 27);
+		sftp_put_Tab_Panel.add(lbl_SubFoldersHint_Put);
+
+		JLabel4j_std lbl_Sync_Put = new JLabel4j_std("Sync Mode");
+		lbl_Sync_Put.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_Sync_Put.setBounds(6, 310, 143, 27);
+		sftp_put_Tab_Panel.add(lbl_Sync_Put);
+
+		checkBx_Sync_Put = new JCheckBox4j("");
+		checkBx_Sync_Put.setSelected(Boolean.valueOf(settingsPut.syncEnabled.data));
+		checkBx_Sync_Put.setBounds(161, 310, 23, 23);
+		sftp_put_Tab_Panel.add(checkBx_Sync_Put);
+
+		JLabel4j_std lbl_SyncHint_Put = new JLabel4j_std("Copy new or changed files and leave the local files in place");
+		lbl_SyncHint_Put.setBounds(196, 310, 454, 27);
+		sftp_put_Tab_Panel.add(lbl_SyncHint_Put);
+
+		JLabel4j_std lbl_SyncDelete_Put = new JLabel4j_std("Sync Deletions");
+		lbl_SyncDelete_Put.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SyncDelete_Put.setBounds(6, 340, 143, 27);
+		sftp_put_Tab_Panel.add(lbl_SyncDelete_Put);
+
+		checkBx_SyncDelete_Put = new JCheckBox4j("");
+		checkBx_SyncDelete_Put.setSelected(checkBx_Sync_Put.isSelected() && Boolean.valueOf(settingsPut.syncDeleteEnabled.data));
+		checkBx_SyncDelete_Put.setEnabled(checkBx_Sync_Put.isSelected());
+		checkBx_SyncDelete_Put.setBounds(161, 340, 23, 23);
+		sftp_put_Tab_Panel.add(checkBx_SyncDelete_Put);
+
+		JLabel4j_std lbl_SyncDeleteHint_Put = new JLabel4j_std("Also delete remote files which are no longer in the local folder");
+		lbl_SyncDeleteHint_Put.setBounds(196, 340, 454, 27);
+		sftp_put_Tab_Panel.add(lbl_SyncDeleteHint_Put);
+
+		JLabel4j_std lbl_SyncDeleteFolders_Put = new JLabel4j_std("Sync Folder Deletions");
+		lbl_SyncDeleteFolders_Put.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SyncDeleteFolders_Put.setBounds(6, 370, 143, 27);
+		sftp_put_Tab_Panel.add(lbl_SyncDeleteFolders_Put);
+
+		checkBx_SyncDeleteFolders_Put = new JCheckBox4j("");
+		checkBx_SyncDeleteFolders_Put.setSelected(Boolean.valueOf(settingsPut.syncDeleteFoldersEnabled.data));
+		checkBx_SyncDeleteFolders_Put.setBounds(161, 370, 23, 23);
+		sftp_put_Tab_Panel.add(checkBx_SyncDeleteFolders_Put);
+
+		JLabel4j_std lbl_SyncDeleteFoldersHint_Put = new JLabel4j_std("Also remove remote folders which are no longer in the local folder");
+		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 370, 454, 27);
+		sftp_put_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Put);
+
+		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
+
+		ActionListener syncDeleteStateListener_Put = new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
+			}
+		};
+
+		checkBx_SubFolders_Put.addActionListener(syncDeleteStateListener_Put);
+		checkBx_Sync_Put.addActionListener(syncDeleteStateListener_Put);
+		checkBx_SyncDelete_Put.addActionListener(syncDeleteStateListener_Put);
+
 		JButton4j btn_LocalFolderSelect_Put = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Put.addActionListener(new ActionListener()
 		{
@@ -880,8 +983,10 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_LocalFolder_Put.setText(selectFolder(fld_LocalFolder_Put.getText()));
 			}
 		});
-		btn_LocalFolderSelect_Put.setBounds(648, 65, 30, 30);
+		btn_LocalFolderSelect_Put.setBounds(588, 65, 30, 30);
 		sftp_put_Tab_Panel.add(btn_LocalFolderSelect_Put);
+
+		addSafeFileButtons(sftp_put_Tab_Panel, fld_LocalFolder_Put, 65, false);
 
 		btn_BackupFolderSelect_Put = new JButton4j(Common.icon_select_folder);
 		btn_BackupFolderSelect_Put.addActionListener(new ActionListener()
@@ -902,8 +1007,10 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_RemoteFolder_Put.setText(jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", fld_RemoteFolder_Put.getText()));
 			}
 		});
-		btn_RemoteFolderSelect_Put.setBounds(648, 215, 30, 30);
+		btn_RemoteFolderSelect_Put.setBounds(588, 215, 30, 30);
 		sftp_put_Tab_Panel.add(btn_RemoteFolderSelect_Put);
+
+		addSafeFileButtons(sftp_put_Tab_Panel, fld_RemoteFolder_Put, 215, true);
 
 		// GET TAB
 
@@ -918,7 +1025,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_Enabled_Get);
 
 		fld_LocalFolder_Get = new JTextField4j();
-		fld_LocalFolder_Get.setBounds(161, 160, 489, 23);
+		fld_LocalFolder_Get.setBounds(161, 160, 429, 23);
 		fld_LocalFolder_Get.setText(settingsGet.localDir.data);
 		sftp_get_Tab_Panel.add(fld_LocalFolder_Get);
 
@@ -962,7 +1069,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(fld_Title_Get);
 
 		fld_RemoteFolder_Get = new JTextField4j();
-		fld_RemoteFolder_Get.setBounds(161, 70, 489, 23);
+		fld_RemoteFolder_Get.setBounds(161, 70, 429, 23);
 		fld_RemoteFolder_Get.setText(settingsGet.remoteDir.data);
 		sftp_get_Tab_Panel.add(fld_RemoteFolder_Get);
 
@@ -986,6 +1093,77 @@ public class JFrameSFTPTransfer extends JFrame
 		fld_TempFileExtension_Get.setText(settingsGet.tempFileExtension.data);
 		sftp_get_Tab_Panel.add(fld_TempFileExtension_Get);
 
+		JLabel4j_std lbl_SubFolders_Get = new JLabel4j_std("Include Sub Folders");
+		lbl_SubFolders_Get.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SubFolders_Get.setBounds(6, 220, 143, 27);
+		sftp_get_Tab_Panel.add(lbl_SubFolders_Get);
+
+		checkBx_SubFolders_Get = new JCheckBox4j("");
+		checkBx_SubFolders_Get.setSelected(Boolean.valueOf(settingsGet.includeSubFolders.data));
+		checkBx_SubFolders_Get.setBounds(161, 220, 23, 23);
+		sftp_get_Tab_Panel.add(checkBx_SubFolders_Get);
+
+		JLabel4j_std lbl_SubFoldersHint_Get = new JLabel4j_std("Also fetch files from folders beneath the remote folder");
+		lbl_SubFoldersHint_Get.setBounds(196, 220, 454, 27);
+		sftp_get_Tab_Panel.add(lbl_SubFoldersHint_Get);
+
+		JLabel4j_std lbl_Sync_Get = new JLabel4j_std("Sync Mode");
+		lbl_Sync_Get.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_Sync_Get.setBounds(6, 250, 143, 27);
+		sftp_get_Tab_Panel.add(lbl_Sync_Get);
+
+		checkBx_Sync_Get = new JCheckBox4j("");
+		checkBx_Sync_Get.setSelected(Boolean.valueOf(settingsGet.syncEnabled.data));
+		checkBx_Sync_Get.setBounds(161, 250, 23, 23);
+		sftp_get_Tab_Panel.add(checkBx_Sync_Get);
+
+		JLabel4j_std lbl_SyncHint_Get = new JLabel4j_std("Copy new or changed files and leave the remote files in place");
+		lbl_SyncHint_Get.setBounds(196, 250, 454, 27);
+		sftp_get_Tab_Panel.add(lbl_SyncHint_Get);
+
+		JLabel4j_std lbl_SyncDelete_Get = new JLabel4j_std("Sync Deletions");
+		lbl_SyncDelete_Get.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SyncDelete_Get.setBounds(6, 280, 143, 27);
+		sftp_get_Tab_Panel.add(lbl_SyncDelete_Get);
+
+		checkBx_SyncDelete_Get = new JCheckBox4j("");
+		checkBx_SyncDelete_Get.setSelected(checkBx_Sync_Get.isSelected() && Boolean.valueOf(settingsGet.syncDeleteEnabled.data));
+		checkBx_SyncDelete_Get.setEnabled(checkBx_Sync_Get.isSelected());
+		checkBx_SyncDelete_Get.setBounds(161, 280, 23, 23);
+		sftp_get_Tab_Panel.add(checkBx_SyncDelete_Get);
+
+		JLabel4j_std lbl_SyncDeleteHint_Get = new JLabel4j_std("Also delete local files which are no longer in the remote folder");
+		lbl_SyncDeleteHint_Get.setBounds(196, 280, 454, 27);
+		sftp_get_Tab_Panel.add(lbl_SyncDeleteHint_Get);
+
+		JLabel4j_std lbl_SyncDeleteFolders_Get = new JLabel4j_std("Sync Folder Deletions");
+		lbl_SyncDeleteFolders_Get.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_SyncDeleteFolders_Get.setBounds(6, 310, 143, 27);
+		sftp_get_Tab_Panel.add(lbl_SyncDeleteFolders_Get);
+
+		checkBx_SyncDeleteFolders_Get = new JCheckBox4j("");
+		checkBx_SyncDeleteFolders_Get.setSelected(Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
+		checkBx_SyncDeleteFolders_Get.setBounds(161, 310, 23, 23);
+		sftp_get_Tab_Panel.add(checkBx_SyncDeleteFolders_Get);
+
+		JLabel4j_std lbl_SyncDeleteFoldersHint_Get = new JLabel4j_std("Also remove local folders which are no longer in the remote folder");
+		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 310, 454, 27);
+		sftp_get_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Get);
+
+		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
+
+		ActionListener syncDeleteStateListener_Get = new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
+			}
+		};
+
+		checkBx_SubFolders_Get.addActionListener(syncDeleteStateListener_Get);
+		checkBx_Sync_Get.addActionListener(syncDeleteStateListener_Get);
+		checkBx_SyncDelete_Get.addActionListener(syncDeleteStateListener_Get);
+
 		JButton4j btn_LocalFolderSelect_Get = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Get.addActionListener(new ActionListener()
 		{
@@ -994,8 +1172,10 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_LocalFolder_Get.setText(selectFolder(fld_LocalFolder_Get.getText()));
 			}
 		});
-		btn_LocalFolderSelect_Get.setBounds(648, 155, 30, 30);
+		btn_LocalFolderSelect_Get.setBounds(588, 155, 30, 30);
 		sftp_get_Tab_Panel.add(btn_LocalFolderSelect_Get);
+
+		addSafeFileButtons(sftp_get_Tab_Panel, fld_LocalFolder_Get, 155, false);
 
 		JButton4j btn_RemoteFolderSelect_Get = new JButton4j(Common.icon_select_folder);
 		btn_RemoteFolderSelect_Get.addActionListener(new ActionListener()
@@ -1005,130 +1185,56 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_RemoteFolder_Get.setText(jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", fld_RemoteFolder_Get.getText()));
 			}
 		});
-		btn_RemoteFolderSelect_Get.setBounds(648, 65, 30, 30);
+		btn_RemoteFolderSelect_Get.setBounds(588, 65, 30, 30);
 		sftp_get_Tab_Panel.add(btn_RemoteFolderSelect_Get);
+
+		addSafeFileButtons(sftp_get_Tab_Panel, fld_RemoteFolder_Get, 65, true);
 
 		// *******
 
+		JButton4j btn_Apply = new JButton4j(Common.icon_ok);
+		btn_Apply.setToolTipText("Apply settings without saving");
+		btn_Apply.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				collectSettings();
+
+				writeToSystemLog("Applying settings without saving.",JLogPanel.INFO);
+
+				applySettings(false);
+			}
+		});
+		btn_Apply.setPreferredSize(btn);
+		toolBarRight.add(btn_Apply);
+
 		JButton4j btn_Save = new JButton4j(Common.icon_save);
+		btn_Save.setToolTipText("Save settings");
 		btn_Save.addActionListener(new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
+				collectSettings();
 
-				settingsCommon.authType.data = comboBox_Authentication_Type_Common.getSelectedItem().toString();
+				saveSettings();
 
-				settingsCommon.checkKnownHosts.data = String.valueOf(chkbox_KnownHosts_Common.isSelected());
-				settingsCommon.emailEnabled.data = String.valueOf(checkBx_EmailEnabled_Common.isSelected());
-				settingsCommon.knownHostsFile.data = fld_KnownHostsFile_Common.getText();
-				settingsCommon.autoAddtoKnownHostsFile.data = String.valueOf(chkbox_AddKnownHosts_Common.isSelected());
+				int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Settings saved.\n\nApply them now ?", "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
 
-				char[] passwordChars = fld_Password_Common.getPassword();
-				String passwordText = new String(passwordChars);
-				settingsCommon.password.data = passwordText;
-				settingsCommon.password.encrypted = "true";
-
-				settingsCommon.checkPrivateKeyFile.data = String.valueOf(chckbx_checkPrivateKey_Common.isSelected());
-				settingsCommon.privateKeyFile.data = fld_PrivateKeyFile_Common.getText();
-				settingsCommon.privateKeyComment.data = fld_PrivateKeyComment_Common.getText();
-				settingsCommon.publicKeyFile.data = fld_PublicKeyFile_Common.getText();
-				passwordChars = fld_PrivateKeyPassword_Common.getPassword();
-				passwordText = new String(passwordChars);
-				settingsCommon.privateKeyPassword.data = passwordText;
-				settingsCommon.privateKeyPassword.encrypted = "true";
-				settingsCommon.privateKeyPasswordProtected.data = String.valueOf(chckbx_PrivateKeyPassword_Common.isSelected());
-
-				settingsCommon.remoteHost.data = fld_HostAddress_Common.getText();
-				settingsCommon.remotePort.data = fld_Port_Common.getText();
-
-				settingsCommon.title.data = fld_Title_Common.getText();
-				settingsCommon.username.data = fld_Username_Common.getText();
-				settingsCommon.applicationPassword.data = new String(fld_applicationPassword.getPassword());
-
-				writeToSystemLog("Saving connection settings to sftp_common.xml",JLogPanel.INFO);
-				settingsUtil.saveSFTPCommonToXml(settingsCommon);
-
-				settingsPut.enabled.data = String.valueOf(checkBx_Enabled_Put.isSelected());
-				settingsPut.remoteDir.data = fld_RemoteFolder_Put.getText();
-				settingsPut.pollFrequencySeconds.data = spinner_PollFrequency_Put.getValue().toString();
-				settingsPut.localDir.data = fld_LocalFolder_Put.getText();
-				settingsPut.localFileMask.data = fld_LocalMask_Put.getText();
-				settingsPut.backupEnabled.data = String.valueOf(checkBx_BackupEnable_Put.isSelected());
-				settingsPut.backupRetention.data = String.valueOf(spinner_BackupRetention_Put.getValue());
-				settingsPut.backupDir.data = fld_BackupFolder_Put.getText();
-				settingsPut.tempFileExtension.data = fld_TempFileExtension_Put.getText();
-				settingsPut.title.data = fld_Title_Put.getText();
-
-				writeToSystemLog("Saving PUT settings to sftp_put.xml",JLogPanel.INFO);
-				settingsUtil.saveSFTPPutToXml(settingsPut);
-
-				settingsGet.enabled.data = String.valueOf(checkBx_Enabled_Get.isSelected());
-				settingsGet.remoteDir.data = fld_RemoteFolder_Get.getText();
-				settingsGet.pollFrequencySeconds.data = spinner_PollFrequency_Get.getValue().toString();
-				settingsGet.localDir.data = fld_LocalFolder_Get.getText();
-				settingsGet.remoteFileMask.data = fld_Remote_Mask_Get.getText();
-				settingsGet.tempFileExtension.data = fld_TempFileExtension_Get.getText();
-				settingsGet.title.data = fld_Title_Get.getText();
-
-				writeToSystemLog("Saving GET settings to sftp_put.xml",JLogPanel.INFO);
-				settingsUtil.saveSFTPGetToXml(settingsGet);
-
-				// update email config and distribution lists from panel data
-				// here.
-
-				emailConfig.clear();
-				for (Component comp : panel_Email_Scrollable.getComponents())
+				if (question == 0)
 				{
-
-					if (comp instanceof EmailPanel)
-					{
-						EmailPanel x = (EmailPanel) comp;
-
-						emailConfig.put(x.fld_Property.getText(), new EmailRecord(x.fld_Property.getText(), x.fld_Value.getText(), x.fld_Encrypted.isSelected(), x.fld_Enabled.isSelected()));
-
-					}
+					applySettings(true);
 				}
-
-				distConfig.clear();
-				for (Component comp : panel_Distribution_Scrollable.getComponents())
+				else
 				{
+					writeToSystemLog("Saved settings have not been applied.",JLogPanel.INFO);
 
-					if (comp instanceof DistributionPanel)
-					{
-						DistributionPanel x = (DistributionPanel) comp;
+					// What is running differs from what is saved by choice, so exit has nothing to warn about.
+					appliedSettingsSaved = true;
 
-						distConfig.put(x.fld_ListID.getText(), new DistributionRecord(x.fld_ListID.getText(), x.fld_Address.getText(), Long.valueOf(x.fld_MaxFrequency.getValue().toString()), x.fld_Enabled.isSelected()));
+					applyTimer.stop();
 
-					}
+					displayMessage("Settings saved but not applied - they take effect on Apply or at the next restart.", messageType_WARN);
 				}
-
-				jschConfig.clear();
-				for (Component comp : panel_Properties_Scrollable.getComponents())
-				{
-
-					if (comp instanceof JschPanel)
-					{
-						JschPanel x = (JschPanel) comp;
-
-						jschConfig.put(x.fld_Id.getText(), new JschRecord(x.fld_Id.getText(), x.fld_Value.getText(), x.fld_Encrypted.isSelected(), x.fld_Enabled.isSelected()));
-
-					}
-				}
-
-				writeToSystemLog("Saving email properties to email_properties.xml",JLogPanel.INFO);
-				settingsUtil.saveEmailPropertiesToXml(emailConfig);
-
-				writeToSystemLog("Saving email distribution lists to email_distribution_properties.xml",JLogPanel.INFO);
-				settingsUtil.saveEmailDistributionListToXml(distConfig);
-
-				writeToSystemLog("Saving Java jsch library properties to jsch_properties.xml",JLogPanel.INFO);
-				settingsUtil.saveJschPropertiesToXml(jschConfig);
-
-				writeToSystemLog("Notifying threads of new configuration.",JLogPanel.INFO);
-				Start.emailthread.loadSmtpPropertie();
-				Start.transferPut.requestMode(TransferPUT.Mode_CONFIG_UPDATE);
-				Start.transferGet.requestMode(TransferGET.Mode_CONFIG_UPDATE);
-
 			}
 		});
 		btn_Save.setPreferredSize(btn);
@@ -1271,8 +1377,8 @@ public class JFrameSFTPTransfer extends JFrame
 			{
 				JDialogAssignPassword changePassword = new JDialogAssignPassword();
 				changePassword.setVisible(true);
-				fld_PrivateKeyPassword_Common.setText(changePassword.enteredPassword);
-				settingsCommon.privateKeyPassword.data = changePassword.enteredPassword;
+				fld_Password_Common.setText(changePassword.enteredPassword);
+				settingsCommon.password.data = changePassword.enteredPassword;
 			}
 		});
 
@@ -1320,7 +1426,14 @@ public class JFrameSFTPTransfer extends JFrame
 	{
 		boolean result = false;
 
-		int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Exit application ?", "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
+		String message = "Exit application ?";
+
+		if (appliedSettingsSaved == false)
+		{
+			message = "Settings have been applied but not saved.\nThey will be lost on exit.\n\nExit application ?";
+		}
+
+		int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, message, "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
 
 		if (question == 0)
 		{
@@ -1365,9 +1478,9 @@ public class JFrameSFTPTransfer extends JFrame
 	{
 		actualPutLogRows++;
 
-		panel_Log_Put_Scrollable.addLog(logdata,level);
-
 		SwingUtilities.invokeLater(() -> {
+
+			panel_Log_Put_Scrollable.addLog(logdata,level);
 
 			if (actualPutLogRows > maxLogRows)
 			{
@@ -1456,6 +1569,27 @@ public class JFrameSFTPTransfer extends JFrame
 		fld_KnownHostsFile_Common.setEnabled(state);
 		btn_KnownHostsSelect_Common.setEnabled(state);
 		chkbox_AddKnownHosts_Common.setEnabled(state);
+	}
+
+	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders)
+	{
+		// Deleting only applies to a sync, and is never left armed while sync is switched off.
+		if (sync.isSelected() == false)
+		{
+			syncDelete.setSelected(false);
+		}
+
+		syncDelete.setEnabled(sync.isSelected());
+
+		// Removing folders only applies when deletions and sub folders are both switched on.
+		boolean folderDeletions = syncDelete.isSelected() && subFolders.isSelected();
+
+		if (folderDeletions == false)
+		{
+			syncDeleteFolders.setSelected(false);
+		}
+
+		syncDeleteFolders.setEnabled(folderDeletions);
 	}
 
 	private void setPutBackupState(boolean state)
@@ -1582,6 +1716,395 @@ public class JFrameSFTPTransfer extends JFrame
 
 		// Cancel pressed → return default
 		return new File(folder, defaultFilename).getAbsolutePath();
+	}
+
+	/**
+	 * Copies everything on screen into the settings objects held by this frame.
+	 */
+	private void collectSettings()
+	{
+		settingsCommon.authType.data = comboBox_Authentication_Type_Common.getSelectedItem().toString();
+
+		settingsCommon.checkKnownHosts.data = String.valueOf(chkbox_KnownHosts_Common.isSelected());
+		settingsCommon.emailEnabled.data = String.valueOf(checkBx_EmailEnabled_Common.isSelected());
+		settingsCommon.knownHostsFile.data = fld_KnownHostsFile_Common.getText();
+		settingsCommon.autoAddtoKnownHostsFile.data = String.valueOf(chkbox_AddKnownHosts_Common.isSelected());
+
+		char[] passwordChars = fld_Password_Common.getPassword();
+		String passwordText = new String(passwordChars);
+		settingsCommon.password.data = passwordText;
+		settingsCommon.password.encrypted = "true";
+
+		settingsCommon.checkPrivateKeyFile.data = String.valueOf(chckbx_checkPrivateKey_Common.isSelected());
+		settingsCommon.privateKeyFile.data = fld_PrivateKeyFile_Common.getText();
+		settingsCommon.privateKeyComment.data = fld_PrivateKeyComment_Common.getText();
+		settingsCommon.publicKeyFile.data = fld_PublicKeyFile_Common.getText();
+		passwordChars = fld_PrivateKeyPassword_Common.getPassword();
+		passwordText = new String(passwordChars);
+		settingsCommon.privateKeyPassword.data = passwordText;
+		settingsCommon.privateKeyPassword.encrypted = "true";
+		settingsCommon.privateKeyPasswordProtected.data = String.valueOf(chckbx_PrivateKeyPassword_Common.isSelected());
+
+		settingsCommon.remoteHost.data = fld_HostAddress_Common.getText();
+		settingsCommon.remotePort.data = fld_Port_Common.getText();
+
+		settingsCommon.title.data = fld_Title_Common.getText();
+		settingsCommon.username.data = fld_Username_Common.getText();
+		settingsCommon.applicationPassword.data = new String(fld_applicationPassword.getPassword());
+
+		settingsPut.enabled.data = String.valueOf(checkBx_Enabled_Put.isSelected());
+		settingsPut.remoteDir.data = fld_RemoteFolder_Put.getText();
+		settingsPut.pollFrequencySeconds.data = spinner_PollFrequency_Put.getValue().toString();
+		settingsPut.localDir.data = fld_LocalFolder_Put.getText();
+		settingsPut.localFileMask.data = fld_LocalMask_Put.getText();
+		settingsPut.backupEnabled.data = String.valueOf(checkBx_BackupEnable_Put.isSelected());
+		settingsPut.backupRetention.data = String.valueOf(spinner_BackupRetention_Put.getValue());
+		settingsPut.backupDir.data = fld_BackupFolder_Put.getText();
+		settingsPut.tempFileExtension.data = fld_TempFileExtension_Put.getText();
+		settingsPut.title.data = fld_Title_Put.getText();
+		settingsPut.includeSubFolders.data = String.valueOf(checkBx_SubFolders_Put.isSelected());
+		settingsPut.syncEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected());
+		settingsPut.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected());
+		settingsPut.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Put.isSelected() && checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected() && checkBx_SyncDeleteFolders_Put.isSelected());
+
+		settingsGet.enabled.data = String.valueOf(checkBx_Enabled_Get.isSelected());
+		settingsGet.remoteDir.data = fld_RemoteFolder_Get.getText();
+		settingsGet.pollFrequencySeconds.data = spinner_PollFrequency_Get.getValue().toString();
+		settingsGet.localDir.data = fld_LocalFolder_Get.getText();
+		settingsGet.remoteFileMask.data = fld_Remote_Mask_Get.getText();
+		settingsGet.tempFileExtension.data = fld_TempFileExtension_Get.getText();
+		settingsGet.title.data = fld_Title_Get.getText();
+		settingsGet.includeSubFolders.data = String.valueOf(checkBx_SubFolders_Get.isSelected());
+		settingsGet.syncEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected());
+		settingsGet.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected());
+		settingsGet.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Get.isSelected() && checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected() && checkBx_SyncDeleteFolders_Get.isSelected());
+
+		// update email config and distribution lists from panel data
+		// here.
+
+		emailConfig.clear();
+		for (Component comp : panel_Email_Scrollable.getComponents())
+		{
+
+			if (comp instanceof EmailPanel)
+			{
+				EmailPanel x = (EmailPanel) comp;
+
+				emailConfig.put(x.fld_Property.getText(), new EmailRecord(x.fld_Property.getText(), x.fld_Value.getText(), x.fld_Encrypted.isSelected(), x.fld_Enabled.isSelected()));
+
+			}
+		}
+
+		distConfig.clear();
+		for (Component comp : panel_Distribution_Scrollable.getComponents())
+		{
+
+			if (comp instanceof DistributionPanel)
+			{
+				DistributionPanel x = (DistributionPanel) comp;
+
+				distConfig.put(x.fld_ListID.getText(), new DistributionRecord(x.fld_ListID.getText(), x.fld_Address.getText(), Long.valueOf(x.fld_MaxFrequency.getValue().toString()), x.fld_Enabled.isSelected()));
+
+			}
+		}
+
+		jschConfig.clear();
+		for (Component comp : panel_Properties_Scrollable.getComponents())
+		{
+
+			if (comp instanceof JschPanel)
+			{
+				JschPanel x = (JschPanel) comp;
+
+				jschConfig.put(x.fld_Id.getText(), new JschRecord(x.fld_Id.getText(), x.fld_Value.getText(), x.fld_Encrypted.isSelected(), x.fld_Enabled.isSelected()));
+
+			}
+		}
+	}
+
+	private void saveSettings()
+	{
+		writeToSystemLog("Saving connection settings to sftp_common.xml",JLogPanel.INFO);
+		settingsUtil.saveSFTPCommonToXml(settingsCommon);
+
+		writeToSystemLog("Saving PUT settings to sftp_put.xml",JLogPanel.INFO);
+		settingsUtil.saveSFTPPutToXml(settingsPut);
+
+		writeToSystemLog("Saving GET settings to sftp_get.xml",JLogPanel.INFO);
+		settingsUtil.saveSFTPGetToXml(settingsGet);
+
+		writeToSystemLog("Saving email properties to email_properties.xml",JLogPanel.INFO);
+		settingsUtil.saveEmailPropertiesToXml(emailConfig);
+
+		writeToSystemLog("Saving email distribution lists to email_distribution_properties.xml",JLogPanel.INFO);
+		settingsUtil.saveEmailDistributionListToXml(distConfig);
+
+		writeToSystemLog("Saving Java jsch library properties to jsch_properties.xml",JLogPanel.INFO);
+		settingsUtil.saveJschPropertiesToXml(jschConfig);
+	}
+
+	/**
+	 * Hands a copy of the settings held by this frame to the running threads.
+	 * Each thread takes them up itself, so a transfer pass which is in progress
+	 * completes with the old settings first.
+	 */
+	private void applySettings(boolean saved)
+	{
+		writeToSystemLog("Notifying threads of new configuration.",JLogPanel.INFO);
+
+		Start.emailthread.requestSettings(settingsUtil.copySettings(settingsCommon), new HashMap<String, EmailRecord>(emailConfig), new HashMap<String, DistributionRecord>(distConfig));
+		Start.archiveThread.requestSettings(settingsUtil.copySettings(settingsPut));
+		Start.transferPut.requestSettings(settingsUtil.copySettings(settingsPut), settingsUtil.copySettings(settingsCommon), new HashMap<String, JschRecord>(jschConfig));
+		Start.transferGet.requestSettings(settingsUtil.copySettings(settingsGet), settingsUtil.copySettings(settingsCommon), new HashMap<String, JschRecord>(jschConfig));
+
+		appliedSettingsSaved = saved;
+
+		displayMessage("Waiting for the current transfer to complete before applying the new settings.", messageType_WARN);
+
+		applyTimer.restart();
+	}
+
+	/**
+	 * The two buttons after a folder field - create the safe file in that
+	 * folder, and remove it again.
+	 */
+	private void addSafeFileButtons(JPanel panel, final JTextField4j folderField, int y, final boolean remote)
+	{
+		String safeFile = remote ? JSafeFile.remote : JSafeFile.local;
+
+		JButton4j btn_SafeFileCreate = new JButton4j(Common.icon_add);
+		btn_SafeFileCreate.setToolTipText("Create the safe file " + safeFile + " in this folder");
+		btn_SafeFileCreate.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				createSafeFile(folderField.getText().trim(), remote);
+			}
+		});
+		btn_SafeFileCreate.setBounds(618, y, 30, 30);
+		panel.add(btn_SafeFileCreate);
+
+		JButton4j btn_SafeFileRemove = new JButton4j(Common.icon_delete);
+		btn_SafeFileRemove.setToolTipText("Remove the safe file " + safeFile + " from this folder");
+		btn_SafeFileRemove.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				removeSafeFile(folderField.getText().trim(), remote);
+			}
+		});
+		btn_SafeFileRemove.setBounds(648, y, 30, 30);
+		panel.add(btn_SafeFileRemove);
+	}
+
+	private void createSafeFile(String folder, boolean remote)
+	{
+		File template = new File(JSafeFile.templateFolder, remote ? JSafeFile.remote : JSafeFile.local);
+
+		if (folder.equals(""))
+		{
+			safeFileError("No folder has been entered.");
+			return;
+		}
+
+		if (template.isFile() == false)
+		{
+			safeFileError("The safe file to copy was not found :\n\n" + template.getPath());
+			return;
+		}
+
+		String safeFile = safeFilePath(folder, remote);
+
+		String message = "This will create the safe file\n\n" + safeFileDescription(safeFile, remote) + "\n\n";
+		message = message + "The safe file marks this as a folder SFTP Transfer may work in.\n";
+		message = message + "Without it nothing is sent, received or deleted there.\n\n";
+		message = message + "Only continue if this is the correct folder" + (remote ? " on the correct server." : "\nand, for a network share, the share is connected.") + "\n\n";
+		message = message + "Create the safe file ?";
+
+		if (safeFileConfirm(message))
+		{
+			if (remote)
+			{
+				if (openSafeFileSession())
+				{
+					if (jcmd.isRemoteFolderPresent(folder) == false)
+					{
+						safeFileError("Remote folder not found :\n\n" + folder);
+					}
+					else if (jcmd.isRemoteFileListed(folder, JSafeFile.remote))
+					{
+						displayMessage("Safe file already present : " + safeFile, messageType_WARN);
+					}
+					else if (jcmd.put(template.getPath(), safeFile))
+					{
+						safeFileDone("Safe file created : " + safeFile);
+					}
+					else
+					{
+						safeFileError("Unable to create the safe file :\n\n" + safeFile);
+					}
+
+					closeSafeFileSession();
+				}
+			}
+			else
+			{
+				File localFolder = new File(folder);
+				File localFile = new File(safeFile);
+
+				if (localFolder.isDirectory() == false)
+				{
+					safeFileError("Local folder not found :\n\n" + localFolder.getAbsolutePath());
+				}
+				else if (localFile.isFile())
+				{
+					displayMessage("Safe file already present : " + safeFile, messageType_WARN);
+				}
+				else
+				{
+					try
+					{
+						Files.copy(template.toPath(), localFile.toPath());
+
+						safeFileDone("Safe file created : " + safeFile);
+					}
+					catch (IOException e)
+					{
+						safeFileError("Unable to create the safe file :\n\n" + safeFile + "\n\n" + e.getMessage());
+					}
+				}
+			}
+		}
+	}
+
+	private void removeSafeFile(String folder, boolean remote)
+	{
+		if (folder.equals(""))
+		{
+			safeFileError("No folder has been entered.");
+			return;
+		}
+
+		String safeFile = safeFilePath(folder, remote);
+
+		String message = "This will remove the safe file\n\n" + safeFileDescription(safeFile, remote) + "\n\n";
+		message = message + "Nothing will be sent, received or deleted in this folder\n";
+		message = message + "until the safe file is created again.\n\n";
+		message = message + "Remove the safe file ?";
+
+		if (safeFileConfirm(message))
+		{
+			if (remote)
+			{
+				if (openSafeFileSession())
+				{
+					if (jcmd.isRemoteFileListed(folder, JSafeFile.remote) == false)
+					{
+						displayMessage("Safe file not present : " + safeFile, messageType_WARN);
+					}
+					else if (jcmd.rm(safeFile))
+					{
+						safeFileDone("Safe file removed : " + safeFile);
+					}
+					else
+					{
+						safeFileError("Unable to remove the safe file :\n\n" + safeFile);
+					}
+
+					closeSafeFileSession();
+				}
+			}
+			else
+			{
+				File localFile = new File(safeFile);
+
+				if (localFile.isFile() == false)
+				{
+					displayMessage("Safe file not present : " + safeFile, messageType_WARN);
+				}
+				else
+				{
+					try
+					{
+						Files.delete(localFile.toPath());
+
+						safeFileDone("Safe file removed : " + safeFile);
+					}
+					catch (IOException e)
+					{
+						safeFileError("Unable to remove the safe file :\n\n" + safeFile + "\n\n" + e.getMessage());
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * The full name of the safe file. A local folder is shown in full so that
+	 * a relative path such as ./send cannot be mistaken for somewhere else.
+	 */
+	private String safeFilePath(String folder, boolean remote)
+	{
+		if (remote)
+		{
+			return folder.endsWith("/") ? folder + JSafeFile.remote : folder + "/" + JSafeFile.remote;
+		}
+
+		return new File(new File(folder), JSafeFile.local).getAbsoluteFile().toPath().normalize().toString();
+	}
+
+	private String safeFileDescription(String safeFile, boolean remote)
+	{
+		if (remote)
+		{
+			return safeFile + "\n\non the server " + settingsCommon.remoteHost.data + ":" + settingsCommon.remotePort.data;
+		}
+
+		return safeFile;
+	}
+
+	private boolean safeFileConfirm(String message)
+	{
+		return JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, message, "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm) == JOptionPane.YES_OPTION;
+	}
+
+	private void safeFileError(String message)
+	{
+		JOptionPane.showMessageDialog(JFrameSFTPTransfer.this, message, "Error", JOptionPane.ERROR_MESSAGE);
+	}
+
+	private void safeFileDone(String message)
+	{
+		writeToSystemLog(message, JLogPanel.INFO);
+
+		displayMessage(message, messageType_INFO);
+	}
+
+	/**
+	 * As with the remote folder look-up, the connection is made with the SFTP
+	 * settings as last applied or saved.
+	 */
+	private boolean openSafeFileSession()
+	{
+		setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+
+		boolean connected = jcmd.connect(settingsCommon, jschConfig);
+
+		if (connected == false)
+		{
+			setCursor(Cursor.getDefaultCursor());
+
+			safeFileError("Unable to connect to " + settingsCommon.remoteHost.data + ":" + settingsCommon.remotePort.data);
+		}
+
+		return connected;
+	}
+
+	private void closeSafeFileSession()
+	{
+		jcmd.resetConnection();
+
+		setCursor(Cursor.getDefaultCursor());
 	}
 
 	private void clearMessage()

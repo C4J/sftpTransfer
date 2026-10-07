@@ -1,5 +1,7 @@
 package com.commander4j.thread;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 import org.apache.logging.log4j.Logger;
 
 import com.commander4j.jsch.JschCommands;
@@ -19,6 +21,9 @@ public class ArchiveThread extends Thread
 	private int archiveRetention = 7;
 	private boolean loadConfig = true;
 	private boolean run=true;
+	
+	// Settings handed over from the screen, taken up between clean-up passes.
+	private AtomicReference<SettingsPut> pendingSettings = new AtomicReference<SettingsPut>();
 	
 	private JschCommands jcmd;
 
@@ -56,6 +61,15 @@ public class ArchiveThread extends Thread
 				loadConfigFromXML();
 			}
 
+			SettingsPut pending = pendingSettings.getAndSet(null);
+
+			if (pending != null)
+			{
+				jcmd.writeToSystemLog("Archive Thread applying new settings.", JLogPanel.INFO);
+
+				assignSettings(pending);
+			}
+
 			archive.archiveBackupFiles(settingsPut.backupDir.data,archiveRetention,"backup.folder");
 
 			wait.manySec(1);
@@ -69,12 +83,27 @@ public class ArchiveThread extends Thread
 	{
 		loadConfig = true;
 	}
+
+	/**
+	 * Hands over settings from the screen, taken up by the archive thread itself.
+	 */
+	public void requestSettings(SettingsPut newPut)
+	{
+		pendingSettings.set(newPut);
+	}
 	
 	private void loadConfigFromXML()
 	{
 		jcmd.writeToSystemLog("Archive Thread loading config.", JLogPanel.INFO);
 		
-		settingsPut = settingUtil.readSFTPPutFromXml();
+		assignSettings(settingUtil.readSFTPPutFromXml());
+		
+		loadConfig=false;
+	}
+	
+	private void assignSettings(SettingsPut newPut)
+	{
+		settingsPut = newPut;
 		
 		try
 		{
@@ -84,7 +113,5 @@ public class ArchiveThread extends Thread
 		{
 			archiveRetention = 7;
 		}
-		
-		loadConfig=false;
 	}
 }

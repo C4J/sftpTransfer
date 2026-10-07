@@ -5,6 +5,7 @@ import java.util.Calendar;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Logger;
 
@@ -47,6 +48,16 @@ public class EmailThread extends Thread
 
 	private boolean run = true;
 
+	// Settings handed over from the screen, taken up once the queue is empty.
+	private AtomicReference<PendingSettings> pendingSettings = new AtomicReference<PendingSettings>();
+
+	private static class PendingSettings
+	{
+		SettingsCommon settingsCommon;
+		HashMap<String, EmailRecord> emailProps;
+		HashMap<String, DistributionRecord> distributionLists;
+	}
+
 	private Logger logger = org.apache.logging.log4j.LogManager.getLogger((EmailThread.class));
 	
 	int logDestination = 0;
@@ -74,6 +85,8 @@ public class EmailThread extends Thread
 		while ((run) || (queue.size()>0))
 		{
 			processQueue();
+			
+			applyPendingSettings();
 			
 			if (queue.size()==0)
 			{
@@ -199,7 +212,7 @@ public class EmailThread extends Thread
 						propNoAuth.put("mail.smtp.user", "");
 						propNoAuth.put("mail.smtp.password", "");
 
-						Session unauthenticatedSession = Session.getInstance(propAuth, null);
+						Session unauthenticatedSession = Session.getInstance(propNoAuth, null);
 
 						MimeMessage message;
 
@@ -274,6 +287,48 @@ public class EmailThread extends Thread
 		}
 
 		return result;
+	}
+
+	/**
+	 * Hands over settings from the screen. They are taken up by the email
+	 * thread itself, after any queued emails have gone with the old settings.
+	 */
+	public void requestSettings(SettingsCommon newCommon, HashMap<String, EmailRecord> newEmailProps, HashMap<String, DistributionRecord> newDistributionLists)
+	{
+		PendingSettings pending = new PendingSettings();
+		pending.settingsCommon = newCommon;
+		pending.emailProps = newEmailProps;
+		pending.distributionLists = newDistributionLists;
+
+		pendingSettings.set(pending);
+	}
+
+	private synchronized void applyPendingSettings()
+	{
+		if (queue.size() == 0)
+		{
+			PendingSettings pending = pendingSettings.getAndSet(null);
+
+			if (pending != null)
+			{
+				jcmd.writeToSystemLog("Email Thread applying new settings.", JLogPanel.INFO);
+
+				settingsCommon = pending.settingsCommon;
+
+				setEnabled(Boolean.valueOf(settingsCommon.emailEnabled.data));
+
+				smtpProperties.clear();
+
+				for (HashMap.Entry<String, EmailRecord> entry : pending.emailProps.entrySet())
+				{
+					smtpProperties.setProperty(entry.getKey(), entry.getValue().value);
+				}
+
+				// Replaced rather than added to, so a list removed on screen is gone here too.
+				distList.clear();
+				distList.putAll(pending.distributionLists);
+			}
+		}
 	}
 
 	public void loadSmtpPropertie()

@@ -1,9 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <config>
     <get>
-        <enabled encrypted="false">true</enabled>
+        <enabled encrypted="false">false</enabled>
+        <guid encrypted="false">6111b786-8976-4cfd-934d-a9239de28ab0</guid>
+        <title encrypted="false"/>
         <remoteDir encrypted="false">/remote</remoteDir>
         <remoteFileMask encrypted="false">*.xml</remoteFileMask>
+        <includeSubFolders encrypted="false">false</includeSubFolders>
+        <syncEnabled encrypted="false">false</syncEnabled>
+        <syncDeleteEnabled encrypted="false">false</syncDeleteEnabled>
+        <syncDeleteFoldersEnabled encrypted="false">false</syncDeleteFoldersEnabled>
         <pollFrequencySeconds encrypted="false">10</pollFrequencySeconds>
         <localDir encrypted="false">./receive</localDir>
         <tempFileExtension encrypted="false">.tmp</tempFileExtension>

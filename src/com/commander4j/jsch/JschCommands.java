@@ -2,6 +2,7 @@ package com.commander4j.jsch;
 
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Properties;
 import java.util.Vector;
@@ -43,9 +44,18 @@ public class JschCommands
 
 	int defaultLogDestination = 0;
 
+	private static final String[] logTag = new String[] { "[GUI] ", "[PUT] ", "[GET] ", "[SYS] " };
+
+	// True from a successful connect until this side closes the session - a
+	// session found closed while this is set was dropped by the server or the network.
+	private boolean sessionOpen = false;
+
 	public String viewTree(SettingsCommon sc, JFrameSFTPTransfer frame, String rootNode, String defaultNode)
 	{
 		String chosen = defaultNode;
+
+		// A session left open by an earlier look-up would still be showing the old host.
+		resetConnection();
 
 		assignCommonSettings(sc);
 		connect();
@@ -72,28 +82,53 @@ public class JschCommands
 
 	public synchronized void writeToLog(String data, int logmode)
 	{
+		writeToFile(defaultLogDestination, data, logmode);
+
 		if (Start.gui != null)
 		{
 			Start.gui.writeToLog(defaultLogDestination, data, logmode);
-		}
-		else
-		{
-			logger.debug(data);		
 		}
 	}
 
 	public synchronized void writeToSystemLog(String data, int logmode)
 	{
+		writeToFile(LogDestination_SYS, data, logmode);
 
 		if (Start.gui != null)
 		{
 			Start.gui.writeToLog(LogDestination_SYS, data, logmode);
 		}
-		else
-		{
-			logger.debug(data);		
-		}
+	}
 
+	/**
+	 * Every message also goes to the log file, whether or not there is a
+	 * window, tagged with the window it belongs to and at a matching level.
+	 * Directory listing entries are kept at debug.
+	 */
+	private void writeToFile(int destination, String data, int logmode)
+	{
+		String line = logTag[destination] + data;
+
+		switch (logmode)
+		{
+		case JLogPanel.ERROR:
+			logger.error(line);
+			break;
+		case JLogPanel.WARN:
+			logger.warn(line);
+			break;
+		case JLogPanel.DIRECTORY:
+			logger.debug(line);
+			break;
+		default:
+			logger.info(line);
+			break;
+		}
+	}
+
+	private String hostLabel()
+	{
+		return settingsCommon.remoteHost.data + ":" + settingsCommon.remotePort.data;
 	}
 
 	public void assignJschConfig(HashMap<String, JschRecord> jschConfig)
@@ -123,12 +158,30 @@ public class JschCommands
 		this.settingsCommon = settingsCommon;
 	}
 
+	/**
+	 * Opens a fresh session for a one-off job from the screen. A session left
+	 * open by an earlier job would still be using the old host. A host which
+	 * has just been added to the known hosts file connects at the second try.
+	 */
+	public boolean connect(SettingsCommon sc, HashMap<String, JschRecord> jschConfig)
+	{
+		resetConnection();
+
+		assignCommonSettings(sc);
+		assignJschConfig(jschConfig);
+
+		return connect() || connect();
+	}
+
 	public boolean connect()
 	{
 		boolean result = false;
 
 		if (isConnected() == false)
 		{
+			// A session whose channel alone has died would otherwise be left open behind the new one.
+			closeSession();
+
 			try
 			{
 				if (Boolean.valueOf(settingsCommon.checkKnownHosts.data))
@@ -157,13 +210,17 @@ public class JschCommands
 
 				jschSession.setPassword(settingsCommon.password.data);
 
-				writeToLog("connect to " + settingsCommon.remoteHost.data + ":" + settingsCommon.remotePort.data, JLogPanel.NORMAL);
+				writeToLog("Connecting to " + hostLabel() + " as " + settingsCommon.username.data, JLogPanel.NORMAL);
 
 				jschSession.connect(15_000);
 
 				channel = (ChannelSftp) jschSession.openChannel("sftp");
 
 				channel.connect();
+
+				sessionOpen = true;
+
+				writeToLog("Connected to " + hostLabel() + " (server " + jschSession.getServerVersion() + ")", JLogPanel.INFO);
 
 				result = true;
 			}
@@ -172,17 +229,23 @@ public class JschCommands
 				
 				if (Boolean.valueOf(settingsCommon.autoAddtoKnownHostsFile.data))
 				{
-					writeToLog("WARNING - adding new host to known hosts file " + jschSession.getHostKey().getHost(), JLogPanel.ERROR);
+					writeToLog("Adding new host to known hosts file " + jschSession.getHostKey().getHost(), JLogPanel.WARN);
 					jsch.getHostKeyRepository().add(jschSession.getHostKey(), getUserInfo());
 				}
 				else
 				{
-					writeToLog("error " + e.getMessage(), JLogPanel.ERROR);
+					writeToLog("Connection to " + hostLabel() + " failed - " + e.getMessage(), JLogPanel.ERROR);
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog("error " + e.getMessage(), JLogPanel.ERROR);
+				writeToLog("Connection to " + hostLabel() + " failed - " + e.getMessage(), JLogPanel.ERROR);
+			}
+
+			if (result == false)
+			{
+				// A session which authenticated but could not open its channel would otherwise be left open.
+				closeSession();
 			}
 		}
 		else
@@ -192,24 +255,65 @@ public class JschCommands
 		return result;
 	}
 
+	/**
+	 * Closes the session, if there is one, and says so. This side closing is
+	 * the only way a "Disconnected" line is written - a session found closed
+	 * by anything else is reported as lost.
+	 */
 	public boolean disconnect()
 	{
-		boolean result = false;
+		boolean wasConnected = isConnected();
+
+		boolean result = closeSession();
+
+		if (wasConnected)
+		{
+			writeToLog("Disconnected from " + hostLabel(), JLogPanel.INFO);
+		}
+
+		return result;
+	}
+
+	private boolean closeSession()
+	{
+		boolean result = true;
+
+		sessionOpen = false;
+
 		try
 		{
-			channel.disconnect();
+			if (channel != null)
+			{
+				channel.disconnect();
+			}
 
-			jschSession.disconnect();
-
-			writeToLog("disconnect", JLogPanel.NORMAL);
-
-			result = true;
+			if (jschSession != null)
+			{
+				jschSession.disconnect();
+			}
 		}
 		catch (Exception e)
 		{
-			writeToLog("error " + e.getMessage(), JLogPanel.ERROR);
+			writeToLog("Disconnect from " + hostLabel() + " failed - " + e.getMessage(), JLogPanel.ERROR);
+			result = false;
 		}
+
+		channel = null;
+		jschSession = null;
+
 		return result;
+	}
+
+	/**
+	 * Drops the session so that the next connect uses the settings and jsch
+	 * properties assigned since. A new JSch forgets the identities and known
+	 * hosts loaded for the old settings.
+	 */
+	public void resetConnection()
+	{
+		disconnect();
+
+		jsch = new JSch();
 	}
 
 	public boolean isConnected()
@@ -241,6 +345,14 @@ public class JschCommands
 				}
 			}
 		}
+
+		if ((result == false) && sessionOpen)
+		{
+			// Closed by the server or the network, not by this side.
+			sessionOpen = false;
+			writeToLog("Connection to " + hostLabel() + " lost", JLogPanel.WARN);
+		}
+
 		return result;
 	}
 
@@ -262,11 +374,12 @@ public class JschCommands
 				{
 					writeToLog("rm " + filename, JLogPanel.NORMAL);
 					channel.rm(filename);
+					result = true;
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("rm " + filename + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -284,11 +397,12 @@ public class JschCommands
 				{
 					writeToLog("cd " + folder, JLogPanel.NORMAL);
 					channel.cd(folder);
+					result = true;
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("cd " + folder + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -306,6 +420,7 @@ public class JschCommands
 				{
 					writeToLog("mkdir " + folder, JLogPanel.NORMAL);
 					channel.mkdir(folder);
+					result = true;
 				}
 				else
 				{
@@ -314,7 +429,7 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("mkdir " + folder + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -332,6 +447,7 @@ public class JschCommands
 				{
 					writeToLog("rmdir " + folder, JLogPanel.NORMAL);
 					channel.rmdir(folder);
+					result = true;
 				}
 				else
 				{
@@ -340,7 +456,7 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("rmdir " + folder + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -356,11 +472,11 @@ public class JschCommands
 			{
 				writeToLog("cdup", JLogPanel.NORMAL);
 				channel.cd("..");
-
+				result = true;
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("cdup failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -379,12 +495,12 @@ public class JschCommands
 				{
 					writeToLog("rename " + from + "," + to, JLogPanel.NORMAL);
 					channel.rename(from, to);
-
+					result = true;
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("rename " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -400,10 +516,11 @@ public class JschCommands
 			{
 				writeToLog("put " + from + "," + to, JLogPanel.NORMAL);
 				channel.put(from, to);
+				result = true;
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("put " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -423,7 +540,7 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("pwd failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -435,19 +552,17 @@ public class JschCommands
 
 		if (isConnected())
 		{
-			try
+			try (OutputStream os = new FileOutputStream(to))
 			{
-				OutputStream os = new FileOutputStream(to);
 				writeToLog("get " + from + "," + to, JLogPanel.NORMAL);
 
 				channel.get(from, os);
 
-				os.close();
-				os = null;
+				result = true;
 			}
 			catch (Exception e)
 			{
-				writeToLog("Exception in GET " + e.getMessage(), JLogPanel.ERROR);
+				writeToLog("get " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -467,6 +582,7 @@ public class JschCommands
 		{
 			try
 			{
+				writeToLog("stat " + remoteFilename, JLogPanel.NORMAL);
 				SftpATTRS attrs = channel.stat(remoteFilename);
 				if (attrs.isDir() == false)
 				{
@@ -482,7 +598,7 @@ public class JschCommands
 		return result;
 	}
 
-	private boolean isRemoteFolderPresent(String remoteDirectory)
+	public boolean isRemoteFolderPresent(String remoteDirectory)
 	{
 		boolean result = false;
 
@@ -490,6 +606,7 @@ public class JschCommands
 		{
 			try
 			{
+				writeToLog("stat " + remoteDirectory, JLogPanel.NORMAL);
 				SftpATTRS attrs = channel.stat(remoteDirectory);
 				if (attrs.isDir() == true)
 				{
@@ -507,29 +624,240 @@ public class JschCommands
 
 	public Vector<ChannelSftp.LsEntry> ls(String path, String mask)
 	{
+		return ls(path, mask, true);
+	}
+
+	/**
+	 * The command is always logged; the entries it returns only when
+	 * logListing is set, since a sync lists the same files on every poll.
+	 */
+	public Vector<ChannelSftp.LsEntry> ls(String path, String mask, boolean logListing)
+	{
 		Vector<ChannelSftp.LsEntry> filelist = new Vector<LsEntry>();
-		writeToLog("ls " + path + "/" + mask, JLogPanel.NORMAL);
 
 		if (isConnected())
 		{
 			try
 			{
+				writeToLog("ls " + path + "/" + mask, JLogPanel.NORMAL);
+
 				filelist = channel.ls(path + "/" + mask);
 
-				for (ChannelSftp.LsEntry entry : filelist)
+				if (logListing)
 				{
-					writeToLog(entry.toString(), JLogPanel.DIRECTORY);
+					for (ChannelSftp.LsEntry entry : filelist)
+					{
+						writeToLog(entry.toString(), JLogPanel.DIRECTORY);
+					}
 				}
 
 			}
 			catch (SftpException e)
 			{
-				writeToLog(e.getMessage(), JLogPanel.ERROR);
+				writeToLog("ls " + path + "/" + mask + " failed - " + e.getMessage(), JLogPanel.ERROR);
 			}
 		}
 
 		return filelist;
 
+	}
+
+	/**
+	 * Names of the folders directly beneath a remote folder. Symbolic links
+	 * are not followed.
+	 */
+	public Vector<String> lsFolders(String path)
+	{
+		Vector<String> result = new Vector<String>();
+
+		if (isConnected())
+		{
+			try
+			{
+				writeToLog("ls " + path, JLogPanel.NORMAL);
+
+				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
+
+				for (ChannelSftp.LsEntry entry : filelist)
+				{
+					String name = entry.getFilename();
+
+					if (entry.getAttrs().isDir() && (name.equals(".") == false) && (name.equals("..") == false))
+					{
+						result.add(name);
+					}
+				}
+
+				Collections.sort(result);
+			}
+			catch (SftpException e)
+			{
+				writeToLog("ls " + path + " failed - " + e.getMessage(), JLogPanel.ERROR);
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Attributes (size, modified time) of the files in a remote folder, keyed
+	 * by filename. Returns null if the folder cannot be listed, typically
+	 * because it does not exist.
+	 */
+	public HashMap<String, SftpATTRS> lsFiles(String path)
+	{
+		HashMap<String, SftpATTRS> result = null;
+
+		if (isConnected())
+		{
+			try
+			{
+				writeToLog("ls " + path, JLogPanel.NORMAL);
+
+				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
+
+				result = new HashMap<String, SftpATTRS>();
+
+				for (ChannelSftp.LsEntry entry : filelist)
+				{
+					if (entry.getAttrs().isDir() == false)
+					{
+						result.put(entry.getFilename(), entry.getAttrs());
+					}
+				}
+			}
+			catch (SftpException e)
+			{
+				result = null;
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Attributes of everything in a remote folder (files and folders), keyed
+	 * by name. Returns null if the folder cannot be listed, so a failed
+	 * listing is never mistaken for an empty folder.
+	 */
+	public HashMap<String, SftpATTRS> lsEntries(String path)
+	{
+		HashMap<String, SftpATTRS> result = null;
+
+		if (isConnected())
+		{
+			try
+			{
+				writeToLog("ls " + path, JLogPanel.NORMAL);
+
+				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
+
+				result = new HashMap<String, SftpATTRS>();
+
+				for (ChannelSftp.LsEntry entry : filelist)
+				{
+					String name = entry.getFilename();
+
+					if ((name.equals(".") == false) && (name.equals("..") == false))
+					{
+						result.put(name, entry.getAttrs());
+					}
+				}
+			}
+			catch (SftpException e)
+			{
+				result = null;
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Looks for a file by listing its folder rather than asking for the file
+	 * itself. A listing is a standard request every SFTP server supports and
+	 * it reads the folder as it is now, whereas a server is free to answer a
+	 * question about one file from details it remembered earlier in the
+	 * session - a file removed by another session can then still appear to
+	 * be there.
+	 */
+	public boolean isRemoteFileListed(String folder, String filename)
+	{
+		boolean result = false;
+
+		HashMap<String, SftpATTRS> entries = lsEntries(folder);
+
+		if (entries != null)
+		{
+			SftpATTRS attrs = entries.get(filename);
+
+			result = (attrs != null) && (attrs.isDir() == false);
+		}
+
+		return result;
+	}
+
+	/**
+	 * Creates any missing folders of relativeFolder beneath baseFolder. The
+	 * base folder itself is never created.
+	 */
+	public boolean mkdirs(String baseFolder, String relativeFolder)
+	{
+		boolean result = false;
+
+		if (isConnected())
+		{
+			try
+			{
+				String folder = baseFolder;
+
+				for (String part : relativeFolder.split("/"))
+				{
+					if (part.equals("") == false)
+					{
+						folder = folder.endsWith("/") ? folder + part : folder + "/" + part;
+
+						if (isRemoteFolderPresent(folder) == false)
+						{
+							writeToLog("mkdir " + folder, JLogPanel.NORMAL);
+							channel.mkdir(folder);
+						}
+					}
+				}
+
+				result = true;
+			}
+			catch (Exception e)
+			{
+				writeToLog("mkdir " + baseFolder + "/" + relativeFolder + " failed - " + e.getMessage(), JLogPanel.ERROR);
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Sets the modified time (seconds since 1970) of a remote file.
+	 */
+	public boolean setMtime(String filename, int mtime)
+	{
+		boolean result = false;
+
+		if (isConnected())
+		{
+			try
+			{
+				writeToLog("setstat " + filename + " mtime=" + mtime, JLogPanel.NORMAL);
+				channel.setMtime(filename, mtime);
+				result = true;
+			}
+			catch (Exception e)
+			{
+				writeToLog("setstat " + filename + " failed - " + e.getMessage(), JLogPanel.WARN);
+			}
+		}
+
+		return result;
 	}
 
 	private UserInfo getUserInfo()
