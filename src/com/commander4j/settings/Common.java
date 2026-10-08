@@ -9,7 +9,7 @@ import javax.swing.ImageIcon;
 
 public class Common
 {
-	public static String helpURL = "http://wiki.commander4j.com";
+	public static String helpURL = "https://wiki.commander4j.com/index.php?title=SFTPTransfer";
 	
 	public static String interface_backup_path = "./backups";
 

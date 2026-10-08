@@ -15,6 +15,7 @@ import com.commander4j.log.JLogPanel;
 
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.sftp.Start;
+import com.commander4j.web.LogHub;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.ChannelSftp.LsEntry;
 import com.jcraft.jsch.JSch;
@@ -103,10 +104,13 @@ public class JschCommands
 	/**
 	 * Every message also goes to the log file, whether or not there is a
 	 * window, tagged with the window it belongs to and at a matching level.
-	 * Directory listing entries are kept at debug.
+	 * Directory listing entries are kept at debug. The same line is kept in
+	 * memory for the web log viewer.
 	 */
 	private void writeToFile(int destination, String data, int logmode)
 	{
+		LogHub.add(destination, logmode, data);
+
 		String line = logTag[destination] + data;
 
 		switch (logmode)

@@ -14,12 +14,16 @@ import com.commander4j.email.DistributionRecord;
 import com.commander4j.email.EmailRecord;
 import com.commander4j.gui.frame.JFrameSFTPTransfer;
 import com.commander4j.jsch.JschCommands;
+import com.commander4j.log.JLogPanel;
+import com.commander4j.settings.SettingUtil;
+import com.commander4j.settings.SettingsCommon;
 import com.commander4j.thread.ArchiveThread;
 import com.commander4j.thread.EmailThread;
 import com.commander4j.thread.ShutdownHook;
 import com.commander4j.thread.TransferGET;
 import com.commander4j.thread.TransferPUT;
 import com.commander4j.util.JWait;
+import com.commander4j.web.WebServer;
 
 public class Start
 {
@@ -40,6 +44,10 @@ public class Start
 	public static ArchiveThread archiveThread;
 
 	public static JFrameSFTPTransfer gui;
+
+	// Read-only web log viewer - null while it is off. Title shown on the page.
+	public static WebServer webServer;
+	public static String webTitle = "";
 
 	public HashMap<String, EmailRecord> emailConfig = new HashMap<String, EmailRecord>();
 	public HashMap<String, DistributionRecord> distConfig = new HashMap<String, DistributionRecord>();
@@ -120,6 +128,9 @@ public class Start
 
 			emailthread.addToQueue("Monitor", "Starting", "SFTP Transfer has started", "");
 
+			SettingsCommon settingsCommon = new SettingUtil().readSFTPCommonFromXml();
+			applyWebSettings(Boolean.valueOf(settingsCommon.webEnabled.data), WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), settingsCommon.title.data);
+
 			if (args[0].equals("desktop"))
 			{
 				gui.setVisible(true);
@@ -136,8 +147,48 @@ public class Start
 		}
 	}
 
+	/**
+	 * Starts, stops or moves the web log viewer to match the settings. Called at
+	 * start-up and whenever settings are applied from the desktop. A port which
+	 * cannot be opened is reported on the System log and the transfers carry on
+	 * without the viewer.
+	 */
+	public static synchronized void applyWebSettings(boolean enabled, int port, String title)
+	{
+		JschCommands syslog = new JschCommands(JschCommands.LogDestination_SYS);
+
+		webTitle = title == null ? "" : title;
+
+		if ((webServer != null) && ((enabled == false) || (webServer.getPort() != port)))
+		{
+			webServer.stop();
+			syslog.writeToLog("Web log viewer stopped on port " + webServer.getPort(), JLogPanel.INFO);
+			webServer = null;
+		}
+
+		if (enabled && (webServer == null))
+		{
+			try
+			{
+				WebServer server = new WebServer(port);
+				server.start();
+				webServer = server;
+				syslog.writeToLog("Web log viewer listening on port " + port + " - http://<this host>:" + port + "/", JLogPanel.INFO);
+			}
+			catch (Exception e)
+			{
+				syslog.writeToLog("Web log viewer could not open port " + port + " - " + e.getMessage(), JLogPanel.WARN);
+			}
+		}
+	}
+
 	public static void requestServiceShutdown()
 	{
+			if (webServer != null)
+			{
+				webServer.stop();
+				webServer = null;
+			}
 
 			emailthread.addToQueue("Monitor", "Shutdown", "SFTP Transfer has stopped", "");
 

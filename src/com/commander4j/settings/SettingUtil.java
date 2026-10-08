@@ -113,6 +113,14 @@ public class SettingUtil
 							result.emailEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.emailEnabled.encrypted = encrypted;
 							break;
+						case "webEnabled":
+							result.webEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.webEnabled.encrypted = encrypted;
+							break;
+						case "webPort":
+							result.webPort.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.webPort.encrypted = encrypted;
+							break;
 						case "remoteHost":
 							result.remoteHost.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.remoteHost.encrypted = encrypted;
@@ -471,6 +479,16 @@ public class SettingUtil
 			emailEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.emailEnabled.data, settings.emailEnabled.encrypted)));
 			emailEnabled.setAttribute("encrypted", settings.emailEnabled.encrypted);
 			settingsElement.appendChild(emailEnabled);
+
+			Element webEnabled = (Element) doc.createElement("webEnabled");
+			webEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.webEnabled.data, settings.webEnabled.encrypted)));
+			webEnabled.setAttribute("encrypted", settings.webEnabled.encrypted);
+			settingsElement.appendChild(webEnabled);
+
+			Element webPort = (Element) doc.createElement("webPort");
+			webPort.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.webPort.data, settings.webPort.encrypted)));
+			webPort.setAttribute("encrypted", settings.webPort.encrypted);
+			settingsElement.appendChild(webPort);
 
 			Element remoteHost = (Element) doc.createElement("remoteHost");
 			remoteHost.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.remoteHost.data, settings.remoteHost.encrypted)));

@@ -7,6 +7,11 @@ public class SettingsCommon
 	public SettingData title = new SettingData("","false");
 	public SettingData emailEnabled = new SettingData("","false");
 
+	// Web log viewer (read-only page showing the Put, Get and System logs). Off unless enabled;
+	// a blank port (config written before the setting existed) means the default port.
+	public SettingData webEnabled = new SettingData("false","false");
+	public SettingData webPort = new SettingData("","false");
+
 	// Security
 	public SettingData remoteHost = new SettingData("","false");
 	public SettingData remotePort =new SettingData("","false");
