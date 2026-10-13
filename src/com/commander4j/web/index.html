@@ -1,16 +1,18 @@
 <!DOCTYPE html>
-<!-- Read-only web view of the sftpTransfer Put, Get and System log windows.
+<!-- Read-only web view of the sftpTransfer log: the Put, Get and System lines merged
+     into one list by sequence number, each prefixed [PUT], [GET] or [SYS] - the same
+     view as the desktop application's log panel.
 
      Follows new entries on the /events SSE stream. Each time that stream (re)opens the
-     page fetches every window's backlog from /api/log?dest=...&after=<last seq seen at that
-     moment> and merges it in by sequence number, so lines written while the browser was
-     away are recovered (up to the server's per-window buffer), and live frames which
-     arrive while a backlog fetch is still in flight do not hide it. -->
+     page fetches the three backlogs from /api/log?dest=...&after=<highest seq held at
+     that moment> and merges them in by sequence number, so lines written while the
+     browser was away are recovered (up to the server's per-log buffer), and live frames
+     which arrive while a backlog fetch is still in flight do not hide it. -->
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>SFTP Transfer - Logs</title>
+  <title>SFTP Transfer - Log</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -20,38 +22,29 @@
     header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; margin-bottom: .6rem; }
     h1 { font-size: 1.2rem; margin: 0; }
     .sub { font-size: .85rem; color: #666; }
-
-    .tabs { display: flex; gap: .3rem; margin-bottom: .5rem; flex-wrap: wrap; }
-    .tab {
-      border: 1px solid #ccd0d6; border-bottom: none; background: #e9ebef; color: #333;
-      padding: .35rem .9rem; border-radius: 4px 4px 0 0; cursor: pointer; font-size: .85rem; user-select: none;
-      display: inline-flex; align-items: center; gap: .4rem;
-    }
-    .tab:hover { background: #f2f3f5; }
-    .tab.sel { background: #fff; font-weight: bold; }
-    .badge { display: none; min-width: 1.3rem; padding: 0 .35rem; border-radius: 999px; background: #1f4e8c; color: #fff; font-size: .72rem; text-align: center; font-weight: normal; }
-    .badge.on { display: inline-block; }
     .state { font-size: .72rem; color: #666; font-weight: normal; }
 
     .controls { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-bottom: .5rem; font-size: .85rem; }
     .controls input[type=search] { padding: .3rem .5rem; border: 1px solid #ccd0d6; border-radius: 4px; min-width: 15rem; font-size: .85rem; }
     .controls label { color: #555; display: inline-flex; align-items: center; gap: .3rem; }
+    .controls .sources { display: inline-flex; gap: .6rem; padding-right: .6rem; border-right: 1px solid #ccd0d6; }
+    .controls select { padding: .3rem .4rem; border: 1px solid #ccd0d6; border-radius: 4px; font-size: .85rem; background: #fff; }
     button { font-size: .85rem; padding: .3rem .7rem; border: 1px solid #ccd0d6; background: #fff; border-radius: 4px; cursor: pointer; }
     button:hover { border-color: #8a9099; }
 
     /* Same colours as the desktop log rows (JLogRow). */
     .log {
-      display: none; background: #fff; border: 1px solid #ccd0d6; font-family: Arial, Helvetica, sans-serif;
-      font-size: .82rem; line-height: 1.5; padding: .5rem .6rem; border-radius: 0 4px 4px 4px;
-      height: 72vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+      background: #fff; border: 1px solid #ccd0d6; font-family: Arial, Helvetica, sans-serif;
+      font-size: .82rem; line-height: 1.5; padding: .5rem .6rem; border-radius: 4px;
+      height: 76vh; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
     }
-    .log.sel { display: block; }
     .log .ts { color: #777; margin-right: .6rem; }
     .log .l0 { color: #0000ff; }
     .log .l1 { color: #dc582a; }
     .log .l2 { color: #ff0000; }
     .log .l3 { color: #000000; }
     .log .l4 { color: #009900; }
+    .log .l5 { color: #808080; }
 
     footer { margin-top: .5rem; font-size: .8rem; color: #666; display: flex; gap: 1rem; flex-wrap: wrap; }
     #conn.ok { color: #2a7d20; }
@@ -64,62 +57,91 @@
     <span class="sub" id="info"></span>
   </header>
 
-  <div class="tabs" id="tabs">
-    <span class="tab sel" data-dest="put">Put Log <span class="state" id="state-put"></span><span class="badge" id="badge-put">0</span></span>
-    <span class="tab" data-dest="get">Get Log <span class="state" id="state-get"></span><span class="badge" id="badge-get">0</span></span>
-    <span class="tab" data-dest="sys">System Log <span class="badge" id="badge-sys">0</span></span>
-  </div>
-
   <div class="controls">
+    <label>Log Level
+      <select id="level" title="Detail shown - Debug adds the polling of the remote folders. Remembered by this browser.">
+        <option value="0">Errors only</option>
+        <option value="1">Warnings and errors</option>
+        <option value="2" selected>Normal</option>
+        <option value="3">Debug</option>
+      </select>
+    </label>
+    <span class="sources">
+      <label title="Show the System log lines"><input type="checkbox" id="show-sys" data-dest="sys" checked/> System</label>
+      <label title="Show the Put log lines"><input type="checkbox" id="show-put" data-dest="put" checked/> Put <span class="state" id="state-put"></span></label>
+      <label title="Show the Get log lines"><input type="checkbox" id="show-get" data-dest="get" checked/> Get <span class="state" id="state-get"></span></label>
+    </span>
     <input type="search" id="search" placeholder="Filter text (substring, case-insensitive)"/>
     <label><input type="checkbox" id="follow" checked/> Auto-scroll</label>
     <button id="clear" type="button">Clear</button>
     <span id="shown" class="sub"></span>
   </div>
 
-  <div class="log sel" id="log-put"></div>
-  <div class="log" id="log-get"></div>
-  <div class="log" id="log-sys"></div>
+  <div class="log" id="log"></div>
 
   <footer>
     <span id="conn"></span>
-    <span>Read only - this page shows the same lines as the Put Log, Get Log and System Log tabs of the desktop application.</span>
+    <span>Read only - this page shows the same lines as the log panel of the desktop application, with the same [PUT], [GET] and [SYS] prefixes. The Log Level and the three boxes here are this browser's own and re-filter the lines already held.</span>
   </footer>
 
   <script>
   (function () {
     'use strict';
 
-    var MAX_LINES = 2000;          // client-side cap per window
+    var MAX_LINES = 3000;          // client-side cap for the merged list
     var STATUS_INTERVAL_MS = 5000;
     var DESTS = ['put', 'get', 'sys'];
+    var TAG = { put: '[PUT] ', get: '[GET] ', sys: '[SYS] ' };   // same prefixes as the desktop panel and the log file
 
     var searchEl = document.getElementById('search');
+    var levelEl = document.getElementById('level');
     var followEl = document.getElementById('follow');
     var connEl = document.getElementById('conn');
     var shownEl = document.getElementById('shown');
+    var logEl = document.getElementById('log');
 
-    var selected = 'put';
-    var buffers = { put: [], get: [], sys: [] };   // entries sorted by seq, oldest first
-    var lastSeq = { put: 0, get: 0, sys: 0 };      // highest seq held per window
-    var unseen = { put: 0, get: 0, sys: 0 };       // live arrivals on a tab that is not showing
+    // Display level, same table as the desktop (JLogPanel.shows): row types are
+    // 0 normal, 1 warn, 2 error, 3 info, 4 directory, 5 debug; levels run
+    // 0 errors only, 1 warnings and errors, 2 normal, 3 debug.
+    var LEVEL_KEY = 'sftpTransfer.logLevel';
+    var level = 2;
+    try {
+      var savedLevel = window.localStorage.getItem(LEVEL_KEY);
+      if (savedLevel !== null && /^[0-3]$/.test(savedLevel)) level = Number(savedLevel);
+    } catch (e) { /* storage unavailable (private window) - stay on Normal */ }
+    levelEl.value = String(level);
 
-    function logEl(dest) { return document.getElementById('log-' + dest); }
+    function shows(rowType) {
+      switch (rowType) {
+        case 2: return true;
+        case 1: return level >= 1;
+        case 5: return level >= 3;
+        default: return level >= 2;
+      }
+    }
+
+    // Which logs are shown - all three at every load, like the desktop boxes (not remembered).
+    var show = { put: true, get: true, sys: true };
+
+    var buffer = [];      // entries from all three logs sorted by seq, oldest first
+    var lastSeq = 0;      // highest seq held
 
     function matches(entry) {
+      if (!show[entry.dest]) return false;
+      if (!shows(entry.level)) return false;
       var text = searchEl.value.trim().toLowerCase();
       if (text === '') return true;
-      return (entry.time + ' ' + entry.msg).toLowerCase().indexOf(text) >= 0;
+      return (entry.time + ' ' + TAG[entry.dest] + entry.msg).toLowerCase().indexOf(text) >= 0;
     }
 
     function rowFor(entry) {
       var div = document.createElement('div');
-      div.className = 'l' + entry.level;
+      div.className = 'l' + entry.level + ' d-' + entry.dest;
       var ts = document.createElement('span');
       ts.className = 'ts';
       ts.textContent = entry.time;
       div.appendChild(ts);
-      div.appendChild(document.createTextNode(entry.msg));
+      div.appendChild(document.createTextNode(TAG[entry.dest] + entry.msg));
       return div;
     }
 
@@ -128,110 +150,80 @@
     }
 
     function updateShown() {
-      var el = logEl(selected);
-      shownEl.textContent = el.childElementCount + ' of ' + buffers[selected].length + ' lines';
+      shownEl.textContent = logEl.childElementCount + ' of ' + buffer.length + ' lines';
     }
 
-    function trim(dest) {
-      var list = buffers[dest];
-      if (list.length > MAX_LINES) list.splice(0, list.length - MAX_LINES);
+    function trim() {
+      if (buffer.length > MAX_LINES) buffer.splice(0, buffer.length - MAX_LINES);
     }
 
-    function render(dest) {
-      var el = logEl(dest);
+    function render() {
       var frag = document.createDocumentFragment();
-      var list = buffers[dest];
-      for (var i = 0; i < list.length; i++) {
-        if (matches(list[i])) frag.appendChild(rowFor(list[i]));
+      for (var i = 0; i < buffer.length; i++) {
+        if (matches(buffer[i])) frag.appendChild(rowFor(buffer[i]));
       }
-      el.textContent = '';
-      el.appendChild(frag);
-      if (followEl.checked) el.scrollTop = el.scrollHeight;
-      if (dest === selected) updateShown();
+      logEl.textContent = '';
+      logEl.appendChild(frag);
+      if (followEl.checked) logEl.scrollTop = logEl.scrollHeight;
+      updateShown();
     }
 
-    function renderAll() {
-      for (var i = 0; i < DESTS.length; i++) render(DESTS[i]);
-    }
-
-    function badge(dest) {
-      var b = document.getElementById('badge-' + dest);
-      b.textContent = unseen[dest];
-      b.className = 'badge' + (unseen[dest] > 0 ? ' on' : '');
-    }
-
-    // Puts an entry into its window's sorted buffer. Returns false when that seq is already held.
-    function insertSorted(dest, entry) {
-      var list = buffers[dest];
-      var lo = 0, hi = list.length;
+    // Puts an entry into the sorted buffer. Returns false when that seq is already held.
+    function insertSorted(entry) {
+      var lo = 0, hi = buffer.length;
       while (lo < hi) {
         var mid = (lo + hi) >> 1;
-        if (list[mid].seq < entry.seq) lo = mid + 1; else hi = mid;
+        if (buffer[mid].seq < entry.seq) lo = mid + 1; else hi = mid;
       }
-      if (lo < list.length && list[lo].seq === entry.seq) return false;
-      list.splice(lo, 0, entry);
-      if (entry.seq > lastSeq[dest]) lastSeq[dest] = entry.seq;
+      if (lo < buffer.length && buffer[lo].seq === entry.seq) return false;
+      buffer.splice(lo, 0, entry);
+      if (entry.seq > lastSeq) lastSeq = entry.seq;
       return true;
     }
 
     // A live frame from the stream: always newer than anything held, so append in place.
     function acceptLive(entry) {
-      var dest = entry.dest;
-      if (!buffers[dest] || entry.seq <= lastSeq[dest]) return;   // unknown window or already held
-      buffers[dest].push(entry);
-      lastSeq[dest] = entry.seq;
-      trim(dest);
+      if (!TAG[entry.dest] || entry.seq <= lastSeq) return;   // unknown log or already held
+      buffer.push(entry);
+      lastSeq = entry.seq;
+      trim();
 
-      if (dest !== selected) { unseen[dest]++; badge(dest); }
+      if (!matches(entry)) { updateShown(); return; }
 
-      if (!matches(entry)) { if (dest === selected) updateShown(); return; }
-
-      var el = logEl(dest);
-      var stick = followEl.checked || atBottom(el);
-      el.appendChild(rowFor(entry));
-      while (el.childElementCount > MAX_LINES) el.removeChild(el.firstChild);
-      if (stick) el.scrollTop = el.scrollHeight;
-      if (dest === selected) updateShown();
+      var stick = followEl.checked || atBottom(logEl);
+      logEl.appendChild(rowFor(entry));
+      while (logEl.childElementCount > MAX_LINES) logEl.removeChild(logEl.firstChild);
+      if (stick) logEl.scrollTop = logEl.scrollHeight;
+      updateShown();
     }
 
     // A backlog fetched after the stream opened: merge by seq (live frames may already have
-    // landed beyond it) and redraw that window once. History does not count as unseen.
-    function acceptBacklog(dest, entries) {
+    // landed beyond it) and redraw once.
+    function acceptBacklog(entries) {
       var added = 0;
       for (var i = 0; i < entries.length; i++) {
-        if (entries[i].dest === dest && insertSorted(dest, entries[i])) added++;
+        if (TAG[entries[i].dest] && insertSorted(entries[i])) added++;
       }
-      if (added > 0) { trim(dest); render(dest); }
-    }
-
-    function select(dest) {
-      selected = dest;
-      unseen[dest] = 0;
-      badge(dest);
-      var tabs = document.querySelectorAll('.tab');
-      for (var i = 0; i < tabs.length; i++) tabs[i].className = 'tab' + (tabs[i].getAttribute('data-dest') === dest ? ' sel' : '');
-      for (var j = 0; j < DESTS.length; j++) logEl(DESTS[j]).className = 'log' + (DESTS[j] === dest ? ' sel' : '');
-      var el = logEl(dest);
-      if (followEl.checked) el.scrollTop = el.scrollHeight;
-      updateShown();
+      if (added > 0) { trim(); render(); }
     }
 
     async function loadBacklog(dest, after) {
       try {
         var res = await fetch('/api/log?dest=' + dest + '&after=' + after, { cache: 'no-store' });
         var data = await res.json();
-        acceptBacklog(dest, data.entries);
+        acceptBacklog(data.entries);
       } catch (e) {
-        acceptLive({ dest: dest, seq: lastSeq[dest] + 1, time: '', level: 2, msg: '[viewer] failed to load backlog: ' + e.message });
+        acceptLive({ dest: dest, seq: lastSeq + 1, time: '', level: 2, msg: '[viewer] failed to load backlog: ' + e.message });
       }
     }
 
-    // The "after" marks are taken before anything is awaited, so a live frame which lands
-    // during the fetches cannot move a window's mark past history it has not yet received.
+    // The "after" mark is taken before anything is awaited, so a live frame which lands
+    // during the fetches cannot move the mark past history not yet received. One mark
+    // serves all three logs: the sequence is global, so anything above it is missing.
     function loadAllBacklogs() {
-      var marks = { put: lastSeq.put, get: lastSeq.get, sys: lastSeq.sys };
+      var mark = lastSeq;
       var jobs = [];
-      for (var i = 0; i < DESTS.length; i++) jobs.push(loadBacklog(DESTS[i], marks[DESTS[i]]));
+      for (var i = 0; i < DESTS.length; i++) jobs.push(loadBacklog(DESTS[i], mark));
       return Promise.all(jobs);
     }
 
@@ -243,20 +235,27 @@
         document.getElementById('info').textContent = 'version ' + data.appVersion;
         document.getElementById('state-put').textContent = '(' + data.putState + ')';
         document.getElementById('state-get').textContent = '(' + data.getState + ')';
-        document.title = (data.title ? data.title + ' - ' : '') + 'SFTP Transfer Logs';
+        document.title = (data.title ? data.title + ' - ' : '') + 'SFTP Transfer Log';
       } catch (e) {
         document.getElementById('info').textContent = 'status unavailable';
       }
     }
 
-    document.getElementById('tabs').addEventListener('click', function (ev) {
-      var t = ev.target.closest('.tab');
-      if (t) select(t.getAttribute('data-dest'));
+    searchEl.addEventListener('input', render);
+    levelEl.addEventListener('change', function () {
+      level = Number(levelEl.value);
+      try { window.localStorage.setItem(LEVEL_KEY, String(level)); } catch (e) { /* not remembered, still applied */ }
+      render();
     });
-    searchEl.addEventListener('input', renderAll);
+    for (var d = 0; d < DESTS.length; d++) {
+      document.getElementById('show-' + DESTS[d]).addEventListener('change', function (ev) {
+        show[ev.target.getAttribute('data-dest')] = ev.target.checked;
+        render();
+      });
+    }
     document.getElementById('clear').addEventListener('click', function () {
-      buffers[selected] = [];
-      render(selected);
+      buffer = [];
+      render();
     });
 
     (async function () {

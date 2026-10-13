@@ -8,10 +8,13 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import com.commander4j.jsch.JschCommands;
+import com.commander4j.log.JLogPanel;
 
 /**
- * In-memory copy of the three log windows (Put, Get, System) so the web page
- * can show them when there is no window at all - the service case.
+ * In-memory copy of the three logs (Put, Get, System) so the web page can
+ * show them when there is no window at all - the service case. The page
+ * merges the three by sequence number into one view, as the desktop log
+ * panel does.
  *
  * <p>{@link JschCommands} publishes here on the same path as it writes to the
  * log file, so the page sees exactly what the desktop tabs see, with the same
@@ -26,7 +29,7 @@ import com.commander4j.jsch.JschCommands;
 public final class LogHub
 {
 	/** Entries kept per destination. */
-	public static final int CAPACITY = 500;
+	public static final int CAPACITY = 2000;
 
 	private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -67,7 +70,10 @@ public final class LogHub
 
 	/**
 	 * Records one line. Lines for {@link JschCommands#LogDestination_NoGUI} are
-	 * dropped, as the desktop does with them.
+	 * dropped, as the desktop does with them. {@link JLogPanel#DEBUG} rows are
+	 * kept - the page has its own Log Level select - which is why the buffer is as
+	 * large as it is: at the polling rate a few hundred entries would be mostly
+	 * poll lines, leaving the Normal view little history.
 	 */
 	public static void add(int destination, int level, String message)
 	{

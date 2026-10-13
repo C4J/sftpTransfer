@@ -16,7 +16,6 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.io.IOCase;
 import org.apache.commons.io.filefilter.WildcardFileFilter;
 
@@ -26,6 +25,8 @@ import com.commander4j.log.JLogPanel;
 import com.commander4j.settings.SettingUtil;
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.settings.SettingsPut;
+import com.commander4j.util.JFileMask;
+import com.commander4j.util.JFormat;
 import com.commander4j.util.JSafeFile;
 import com.jcraft.jsch.SftpATTRS;
 
@@ -79,6 +80,17 @@ public class TransferPUT extends Thread
 	// Each missing safe file is reported once, not on every poll.
 	private boolean localSafeFileMissing = false;
 	private boolean remoteSafeFileMissing = false;
+
+	// Stability check: the size and modified time of every candidate file as it was found,
+	// and when. The wait runs once per pass, just before the first file is sent.
+	private HashMap<File, long[]> stabilitySnapshot = new HashMap<File, long[]>();
+	private Instant collectedAt = Instant.now();
+	private boolean stabilityWaited = false;
+
+	// Counts for the pass summary.
+	private int sentCount = 0;
+	private int failedCount = 0;
+	private int skippedCount = 0;
 
 
 	public TransferPUT(int destination)
@@ -307,14 +319,20 @@ public class TransferPUT extends Thread
 
 	/**
 	 * The safe file is the proof that the remote folder is the one the files
-	 * are meant for - and the one files may be deleted from.
+	 * are meant for - and the one files may be deleted from. Returns the
+	 * listing of the remote folder when the safe file is in it, null when it
+	 * is not (or the folder could not be listed). The caller's sync pass takes
+	 * its view of the remote folder from this same listing instead of listing
+	 * the folder again - it is returned, not kept, so it lives for one pass.
 	 */
-	private boolean isRemoteSafeFilePresent()
+	private JschCommands.RemoteListing remoteSafeFileListing()
 	{
 		String safeFile = remotePath(settingsPut.remoteDir.data, JSafeFile.remote);
 
 		// The remote folder is listed because a server may answer a question about one file from a cache.
-		boolean present = jcmd.isRemoteFileListed(settingsPut.remoteDir.data, JSafeFile.remote);
+		JschCommands.RemoteListing listing = jcmd.listFolder(settingsPut.remoteDir.data, false);
+
+		boolean present = (listing != null) && listing.hasFile(JSafeFile.remote);
 
 		if (present)
 		{
@@ -333,7 +351,7 @@ public class TransferPUT extends Thread
 
 		remoteSafeFileMissing = (present == false);
 
-		return present;
+		return present ? listing : null;
 	}
 
 	private void sendLocalFolder()
@@ -350,8 +368,17 @@ public class TransferPUT extends Thread
 		// Remote folders with no local counterpart, cleared out at the end of a completed sync.
 		ArrayList<String> syncFolderDeletions = new ArrayList<String>();
 
+		stabilitySnapshot.clear();
+		collectedAt = Instant.now();
+		stabilityWaited = false;
+		sentCount = 0;
+		failedCount = 0;
+		skippedCount = 0;
+		Instant passStarted = Instant.now();
+
 		File sourceDirectory = new File(settingsPut.localDir.data);
-		FileFilter fileFilter = WildcardFileFilter.builder().setWildcards(settingsPut.localFileMask.data).setIoCase(IOCase.INSENSITIVE).get();
+		// One or more masks separated by ';' - a file matching any of them is sent.
+		FileFilter fileFilter = WildcardFileFilter.builder().setWildcards(JFileMask.split(settingsPut.localFileMask.data)).setIoCase(IOCase.INSENSITIVE).get();
 
 		// Relative folder ("" is the local folder itself) and the files in it which match the mask.
 		LinkedHashMap<String, ArrayList<File>> folders = new LinkedHashMap<String, ArrayList<File>>();
@@ -379,7 +406,10 @@ public class TransferPUT extends Thread
 			{
 				jcmd.connect();
 			}
-			if (jcmd.isConnected() && isRemoteSafeFilePresent())
+			// The listing which proved the safe file is the remote folder as it is now; the top folder's sync pass uses it below.
+			JschCommands.RemoteListing topListing = jcmd.isConnected() ? remoteSafeFileListing() : null;
+
+			if (jcmd.isConnected() && (topListing != null))
 			{
 				if (sync == false)
 				{
@@ -397,9 +427,11 @@ public class TransferPUT extends Thread
 
 					if (sync)
 					{
-						remoteFiles = jcmd.lsFiles(remoteFolder);
+						// One read of the remote folder serves the file comparison and the folder comparison below.
+						// The top folder was read a moment ago for the safe file check; a sub folder is read here.
+						JschCommands.RemoteListing listing = relativeFolder.equals("") ? topListing : jcmd.listFolder(remoteFolder, false);
 
-						if (remoteFiles == null)
+						if (listing == null)
 						{
 							if (relativeFolder.equals("") == false)
 							{
@@ -407,6 +439,10 @@ public class TransferPUT extends Thread
 							}
 
 							remoteFiles = new HashMap<String, SftpATTRS>();
+						}
+						else
+						{
+							remoteFiles = listing.files();
 						}
 
 						if (syncDelete)
@@ -423,7 +459,7 @@ public class TransferPUT extends Thread
 
 							if (syncDeleteFolders)
 							{
-								HashMap<String, SftpATTRS> remoteEntries = jcmd.lsEntries(remoteFolder);
+								HashMap<String, SftpATTRS> remoteEntries = (listing == null) ? null : listing.entries();
 
 								if (remoteEntries != null)
 								{
@@ -466,22 +502,41 @@ public class TransferPUT extends Thread
 						String filename = sourceFile.getName();
 						String relativeFile = remotePath(relativeFolder, filename);
 
-						if (sync)
+						if (sync && isRemoteCopyCurrent(sourceFile, remoteFiles.get(filename)))
 						{
-							if (isRemoteCopyCurrent(sourceFile, remoteFiles.get(filename)))
+							continue;
+						}
+
+						// Stability check - the wait happens once, before the first file is actually sent.
+						if (Boolean.valueOf(settingsPut.stabilityCheckEnabled.data))
+						{
+							if (awaitStability() == false)
 							{
-								continue;
+								return;
 							}
 
-							jcmd.writeToLog("Sync = " + relativeFile, JLogPanel.INFO);
+							if (isStable(sourceFile, relativeFile) == false)
+							{
+								skippedCount++;
+								continue;
+							}
+						}
+
+						long size = sourceFile.length();
+
+						if (sync)
+						{
+							jcmd.writeToLog("Sync sending " + relativeFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
 						}
 						else
 						{
-							jcmd.writeToLog("Processing = " + String.valueOf(fileNumber) + " of " + fileCount + " " + relativeFile, JLogPanel.INFO);
+							jcmd.writeToLog("Sending " + String.valueOf(fileNumber) + " of " + fileCount + " : " + relativeFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
 						}
 
 						if (sourceFile.isFile())
 						{
+							Instant fileStarted = Instant.now();
+
 
 							if (Boolean.valueOf(settingsPut.backupEnabled.data)==true)
 							{
@@ -519,15 +574,20 @@ public class TransferPUT extends Thread
 									{
 										FileUtils.deleteQuietly(sourceFile);
 									}
+
+									sentCount++;
+									jcmd.writeToLog("Sent " + relativeFile + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
 								}
 								else
 								{
+									failedCount++;
 									jcmd.writeToLog("Upload failed, local file retained " + sourceFile.getPath(), JLogPanel.ERROR);
 								}
 
 							}
 							catch (Exception e)
 							{
+								failedCount++;
 								jcmd.writeToLog(e.getMessage(), JLogPanel.ERROR);
 							}
 							finally
@@ -540,6 +600,8 @@ public class TransferPUT extends Thread
 					}
 
 				}
+
+				logPassSummary(passStarted);
 
 				if (jcmd.isConnected() == false)
 				{
@@ -567,6 +629,101 @@ public class TransferPUT extends Thread
 	}
 
 	/**
+	 * One line at the end of a pass in which at least one file was sent,
+	 * failed or skipped - a pass with nothing to do stays silent.
+	 */
+	private void logPassSummary(Instant passStarted)
+	{
+		if ((sentCount + failedCount + skippedCount) > 0)
+		{
+			jcmd.writeToLog("Transfer finished - " + sentCount + " sent, " + failedCount + " failed, " + skippedCount + " skipped in " + JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis()), JLogPanel.INFO);
+		}
+	}
+
+	/**
+	 * Stability check, part one: the files were sized and timed as they were
+	 * collected; this waits until that was the configured number of seconds
+	 * ago. Done once per pass, just before the first transfer, so a pass
+	 * with nothing to send never waits. Returns false if a shutdown arrived
+	 * during the wait.
+	 */
+	private boolean awaitStability()
+	{
+		if (stabilityWaited == false)
+		{
+			stabilityWaited = true;
+
+			long waitMillis = stabilitySeconds() * 1000L - Duration.between(collectedAt, Instant.now()).toMillis();
+
+			if (waitMillis > 0)
+			{
+				jcmd.writeToLog("Stability check - waiting " + JFormat.seconds(waitMillis) + " before the first transfer", JLogPanel.INFO);
+
+				Instant until = Instant.now().plusMillis(waitMillis);
+
+				while (Instant.now().isBefore(until))
+				{
+					if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
+					{
+						return false;
+					}
+
+					try
+					{
+						Thread.sleep(100);
+					}
+					catch (InterruptedException e)
+					{
+						return false;
+					}
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Stability check, part two: a file whose size or modified time differs
+	 * from when it was collected (or which has gone) is still being written,
+	 * so it is left for the next poll - no backup, no upload, no delete.
+	 */
+	private boolean isStable(File sourceFile, String relativeFile)
+	{
+		long[] before = stabilitySnapshot.get(sourceFile);
+
+		if (sourceFile.isFile() == false)
+		{
+			jcmd.writeToLog("Skipped, no longer there : " + relativeFile, JLogPanel.WARN);
+			return false;
+		}
+
+		long size = sourceFile.length();
+		long modified = sourceFile.lastModified();
+
+		if ((before == null) || (before[0] != size) || (before[1] != modified))
+		{
+			String sizes = (before == null) ? JFormat.bytes(size) : JFormat.bytes(before[0]) + " -> " + JFormat.bytes(size);
+			jcmd.writeToLog("Skipped, still changing : " + relativeFile + " (" + sizes + ") - retried on the next poll", JLogPanel.WARN);
+			return false;
+		}
+
+		return true;
+	}
+
+	private int stabilitySeconds()
+	{
+		try
+		{
+			return Math.max(1, Integer.parseInt(settingsPut.stabilitySeconds.data.trim()));
+		}
+		catch (Exception e)
+		{
+			return 5;
+		}
+	}
+
+	/**
 	 * Only files the transfer could have put there are ever removed - the
 	 * name has to match the file mask and must not be a part-finished upload.
 	 */
@@ -577,14 +734,12 @@ public class TransferPUT extends Thread
 			return false;
 		}
 
-		String tempFileExtension = settingsPut.tempFileExtension.data;
-
-		if ((tempFileExtension.equals("") == false) && filename.endsWith(tempFileExtension))
+		if (isTempFile(filename))
 		{
 			return false;
 		}
 
-		return FilenameUtils.wildcardMatch(filename, settingsPut.localFileMask.data, IOCase.INSENSITIVE);
+		return JFileMask.matches(filename, settingsPut.localFileMask.data, IOCase.INSENSITIVE);
 	}
 
 	/**
@@ -656,10 +811,11 @@ public class TransferPUT extends Thread
 
 			for (File entry : entries)
 			{
-				// The safe files are never sent, whatever the file mask.
-				if (entry.isFile() && fileFilter.accept(entry) && (JSafeFile.isSafeFile(entry.getName()) == false))
+				// The safe files are never sent, whatever the file mask, and nor is a file still being written under the temporary extension.
+				if (entry.isFile() && fileFilter.accept(entry) && (JSafeFile.isSafeFile(entry.getName()) == false) && (isTempFile(entry.getName()) == false))
 				{
 					files.add(entry);
+					stabilitySnapshot.put(entry, new long[] { entry.length(), entry.lastModified() });
 				}
 			}
 
@@ -675,6 +831,17 @@ public class TransferPUT extends Thread
 				}
 			}
 		}
+	}
+
+	/**
+	 * A file carrying the temporary extension is one somebody is still
+	 * writing, so it is left alone whatever the file mask says.
+	 */
+	private boolean isTempFile(String filename)
+	{
+		String tempFileExtension = settingsPut.tempFileExtension.data;
+
+		return (tempFileExtension.equals("") == false) && filename.endsWith(tempFileExtension);
 	}
 
 	private boolean isBackupFolder(File folder)

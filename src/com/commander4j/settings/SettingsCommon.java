@@ -12,6 +12,10 @@ public class SettingsCommon
 	public SettingData webEnabled = new SettingData("false","false");
 	public SettingData webPort = new SettingData("","false");
 
+	// Display level of the desktop log tabs, one of JLogPanel.LEVEL_NAMES; blank (or an unknown
+	// name) means Normal. Written the moment the Show combo changes, not through Apply/Save.
+	public SettingData logLevel = new SettingData("","false");
+
 	// Security
 	public SettingData remoteHost = new SettingData("","false");
 	public SettingData remotePort =new SettingData("","false");

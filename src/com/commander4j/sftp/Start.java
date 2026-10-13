@@ -15,10 +15,16 @@ import com.commander4j.email.EmailRecord;
 import com.commander4j.gui.frame.JFrameSFTPTransfer;
 import com.commander4j.jsch.JschCommands;
 import com.commander4j.log.JLogPanel;
+import com.commander4j.jsch.JschRecord;
+import com.commander4j.settings.ReloadRequest;
+import com.commander4j.settings.ServiceLock;
 import com.commander4j.settings.SettingUtil;
 import com.commander4j.settings.SettingsCommon;
+import com.commander4j.settings.SettingsGet;
+import com.commander4j.settings.SettingsPut;
 import com.commander4j.thread.ArchiveThread;
 import com.commander4j.thread.EmailThread;
+import com.commander4j.thread.ReloadWatcher;
 import com.commander4j.thread.ShutdownHook;
 import com.commander4j.thread.TransferGET;
 import com.commander4j.thread.TransferPUT;
@@ -36,7 +42,7 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "6.10";
+	public static String version = "6.11";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;
@@ -45,9 +51,16 @@ public class Start
 
 	public static JFrameSFTPTransfer gui;
 
+	// Service mode only - collects the desktop's reload requests. Null in desktop mode.
+	public static ReloadWatcher reloadWatcher;
+
 	// Read-only web log viewer - null while it is off. Title shown on the page.
 	public static WebServer webServer;
 	public static String webTitle = "";
+
+	// What the settings last asked of the viewer, so a service can retry a port which was busy at the time.
+	private static boolean webWantedEnabled = false;
+	private static int webWantedPort = WebServer.DEFAULT_PORT;
 
 	public HashMap<String, EmailRecord> emailConfig = new HashMap<String, EmailRecord>();
 	public HashMap<String, DistributionRecord> distConfig = new HashMap<String, DistributionRecord>();
@@ -128,6 +141,30 @@ public class Start
 
 			emailthread.addToQueue("Monitor", "Starting", "SFTP Transfer has started", "");
 
+			if (args[0].equals("service"))
+			{
+				JschCommands syslog = new JschCommands(JschCommands.LogDestination_SYS);
+
+				// The lock is how a desktop on this machine knows the service is running - see ServiceLock.
+				if (ServiceLock.acquire())
+				{
+					syslog.writeToLog("Service lock taken : " + ServiceLock.getFile().getPath() + " - a desktop on this machine will leave the transfers and the web viewer to this service", JLogPanel.INFO);
+				}
+				else
+				{
+					syslog.writeToLog("Service lock NOT taken : " + ServiceLock.getFile().getPath() + " - " + ServiceLock.getLastAcquireError() + " - another service already running, or no permission ? A desktop on this machine will not know this service is here", JLogPanel.WARN);
+				}
+
+				// A request left over from before this start is pointless - the settings were just read.
+				if (ReloadRequest.clear())
+				{
+					new JschCommands(JschCommands.LogDestination_SYS).writeToLog("Stale " + ReloadRequest.FILENAME + " removed - the settings have just been read", JLogPanel.INFO);
+				}
+
+				reloadWatcher = new ReloadWatcher();
+				reloadWatcher.start();
+			}
+
 			SettingsCommon settingsCommon = new SettingUtil().readSFTPCommonFromXml();
 			applyWebSettings(Boolean.valueOf(settingsCommon.webEnabled.data), WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), settingsCommon.title.data);
 
@@ -148,6 +185,47 @@ public class Start
 	}
 
 	/**
+	 * Hands a complete set of settings to the four threads and the web viewer.
+	 * The desktop's Apply passes copies of what is on screen; a service reload
+	 * passes what it has just read from disk. Each thread takes its settings up
+	 * itself, never part way through a transfer pass; the viewer changes at once.
+	 */
+	public static void handOverSettings(SettingsCommon common, SettingsPut put, SettingsGet get, HashMap<String, EmailRecord> email, HashMap<String, DistributionRecord> dist, HashMap<String, JschRecord> jsch)
+	{
+		emailthread.requestSettings(common, email, dist);
+		archiveThread.requestSettings(put);
+		transferPut.requestSettings(put, common, jsch);
+		transferGet.requestSettings(get, common, jsch);
+
+		applyWebSettings(Boolean.valueOf(common.webEnabled.data), WebServer.parsePort(common.webPort.data, WebServer.DEFAULT_PORT), common.title.data);
+	}
+
+	/**
+	 * Service mode, on a reload request: re-reads the six settings files and
+	 * hands them over. A file which does not parse stops the whole reload - the
+	 * readers would return defaults for it, and defaults must never reach
+	 * running threads - and the request is simply dropped; the next Apply
+	 * writes another.
+	 */
+	public static synchronized void reloadSettingsFromDisk()
+	{
+		JschCommands syslog = new JschCommands(JschCommands.LogDestination_SYS);
+		SettingUtil settingUtil = new SettingUtil();
+
+		String badFile = settingUtil.checkConfigFiles();
+
+		if (badFile != null)
+		{
+			syslog.writeToLog("Settings reload requested but " + badFile + " could not be parsed - settings unchanged, request dropped", JLogPanel.ERROR);
+			return;
+		}
+
+		syslog.writeToLog("Settings reload requested - re-reading xml/config and notifying threads of new configuration", JLogPanel.INFO);
+
+		handOverSettings(settingUtil.readSFTPCommonFromXml(), settingUtil.readSFTPPutFromXml(), settingUtil.readSFTPGetFromXml(), settingUtil.readEmailPropertiesFromXml(), settingUtil.readDistributionListFromXml(), settingUtil.readJschPropertiesFromXml());
+	}
+
+	/**
 	 * Starts, stops or moves the web log viewer to match the settings. Called at
 	 * start-up and whenever settings are applied from the desktop. A port which
 	 * cannot be opened is reported on the System log and the transfers carry on
@@ -158,6 +236,25 @@ public class Start
 		JschCommands syslog = new JschCommands(JschCommands.LogDestination_SYS);
 
 		webTitle = title == null ? "" : title;
+		webWantedEnabled = enabled;
+		webWantedPort = port;
+
+		// A desktop beside a running service leaves the viewer to the service - two listeners would fight for the port.
+		if (enabled && ServiceLock.isHeldElsewhere())
+		{
+			if (webServer != null)
+			{
+				webServer.stop();
+				syslog.writeToLog("Web log viewer stopped on port " + webServer.getPort() + " - a service on this machine owns the viewer", JLogPanel.INFO);
+				webServer = null;
+			}
+			else
+			{
+				syslog.writeToLog("Web log viewer not started - a service on this machine owns the viewer", JLogPanel.INFO);
+			}
+
+			return;
+		}
 
 		if ((webServer != null) && ((enabled == false) || (webServer.getPort() != port)))
 		{
@@ -182,8 +279,39 @@ public class Start
 		}
 	}
 
+	/**
+	 * Service mode, from the reload watcher: a viewer wanted but not listening
+	 * (its port was busy when the settings were applied - a desktop's viewer,
+	 * most likely, since released) is tried again, quietly. Only success is
+	 * logged; the failure was logged when it happened.
+	 */
+	public static synchronized void retryWebViewer()
+	{
+		if (webWantedEnabled && (webServer == null))
+		{
+			try
+			{
+				WebServer server = new WebServer(webWantedPort);
+				server.start();
+				webServer = server;
+				new JschCommands(JschCommands.LogDestination_SYS).writeToLog("Web log viewer listening on port " + webWantedPort + " - http://<this host>:" + webWantedPort + "/ (the port has become free)", JLogPanel.INFO);
+			}
+			catch (Exception e)
+			{
+				// Still busy - tried again on the next round.
+			}
+		}
+	}
+
 	public static void requestServiceShutdown()
 	{
+			// No reload may start once the threads are being stopped.
+			if (reloadWatcher != null)
+			{
+				reloadWatcher.shutdown();
+				reloadWatcher = null;
+			}
+
 			if (webServer != null)
 			{
 				webServer.stop();
@@ -201,6 +329,9 @@ public class Start
 			emailthread.shutdown();
 
 			waitforServicesShutdown();
+
+			// Released only now, so a desktop on this machine does not take over until the transfers have really stopped.
+			ServiceLock.release();
 
 			LogManager.getLogger(Start.class).info("sftpTransfer Stopped");
 

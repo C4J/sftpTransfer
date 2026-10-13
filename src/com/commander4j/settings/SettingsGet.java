@@ -15,6 +15,9 @@ public class SettingsGet
 	public SettingData syncEnabled =new SettingData("false","false");
 	public SettingData syncDeleteEnabled =new SettingData("false","false");
 	public SettingData syncDeleteFoldersEnabled =new SettingData("false","false");
+	// Wait, then re-list the folder, before fetching a file - a file still being written is left for the next poll.
+	public SettingData stabilityCheckEnabled =new SettingData("false","false");
+	public SettingData stabilitySeconds =new SettingData("5","false");
 
 	public SettingData pollFrequencySeconds =new SettingData("","false");
 	

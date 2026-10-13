@@ -3,6 +3,9 @@
     <settings>
         <title encrypted="false">SFTP Transfer Example</title>
         <emailEnabled encrypted="false">false</emailEnabled>
+        <webEnabled encrypted="false">false</webEnabled>
+        <webPort encrypted="false">8080</webPort>
+        <logLevel encrypted="false">Normal</logLevel>
         <remoteHost encrypted="false">10.0.0.35</remoteHost>
         <remotePort encrypted="false">2222</remotePort>
         <checkKnownHosts encrypted="false">true</checkKnownHosts>

@@ -24,7 +24,7 @@ public class EmailPanel extends JPanel
 
 	public static int rowheight = 23;
 	public static int propertywidth = 200;
-	public static int valuewidth = 280;
+	public static int valuewidth = 240;
 	public static int encryptedwidth = rowheight;
 	public static int enabledwidth = rowheight;
 	private JLabel seperator = new JLabel("---");

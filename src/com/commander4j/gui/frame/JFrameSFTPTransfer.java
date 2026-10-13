@@ -7,6 +7,7 @@ import java.awt.Container;
 import java.awt.Desktop;
 import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.GraphicsConfiguration;
 import java.awt.GraphicsDevice;
 import java.awt.Rectangle;
@@ -19,6 +20,8 @@ import java.awt.event.WindowEvent;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.time.Duration;
+import java.time.Instant;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -39,6 +42,7 @@ import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
 import javax.swing.JSpinner;
+import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JToggleButton;
 import javax.swing.JToolBar;
@@ -47,6 +51,8 @@ import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
+import javax.swing.event.ListDataListener;
+import javax.swing.event.ListDataEvent;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import javax.swing.event.DocumentEvent;
@@ -76,6 +82,8 @@ import com.commander4j.jsch.JschPanel;
 import com.commander4j.jsch.JschRecord;
 import com.commander4j.log.JLogPanel;
 import com.commander4j.settings.Common;
+import com.commander4j.settings.ReloadRequest;
+import com.commander4j.settings.ServiceLock;
 import com.commander4j.settings.SettingUtil;
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.settings.SettingsGet;
@@ -124,6 +132,12 @@ public class JFrameSFTPTransfer extends JFrame
 	private JComboBox4j<String> comboBox_Authentication_Type_Common;
 	private JLabel4j_std messageLabel;
 
+	// The strip above the status line, shown only while a service is running on this machine.
+	private JLabel4j_std serviceBanner;
+	private JToggleButton4j btnStartStop;
+	private boolean servicePresent = false;
+	private boolean serviceProbeFailing = false;
+
 	private JTextField4j fld_Title_Put;
 	private JTextField4j fld_LocalFolder_Put;
 	private JTextField4j fld_LocalMask_Put;
@@ -138,6 +152,8 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_Sync_Put;
 	private JCheckBox4j checkBx_SyncDelete_Put;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Put;
+	private JCheckBox4j checkBx_Stability_Put;
+	private JSpinner4j spinner_StabilitySeconds_Put;
 	private JButton4j btn_BackupFolderSelect_Put;
 
 	private JTextField4j fld_Title_Get;
@@ -151,6 +167,8 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_Sync_Get;
 	private JCheckBox4j checkBx_SyncDelete_Get;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Get;
+	private JCheckBox4j checkBx_Stability_Get;
+	private JSpinner4j spinner_StabilitySeconds_Get;
 
 	// private JCheckBox chckbx_PrivateKeyPassword = new JCheckBox("");
 	private JCheckBox4j chckbx_PrivateKeyPassword_Common;
@@ -167,21 +185,32 @@ public class JFrameSFTPTransfer extends JFrame
 	private JPanel panel_Email_Scrollable;
 	private JPanel panel_Distribution_Scrollable;
 	private JPanel panel_Properties_Scrollable;
-	private JLogPanel panel_Log_Put_Scrollable;
-	private JLogPanel panel_Log_Get_Scrollable;
-	private JLogPanel panel_Log_System_Scrollable;
-
-	private JScrollPane scrollPane_System_Log;
-	private JScrollPane scrollPane_Put_Log;
-	private JScrollPane scrollPane_Get_Log;
+	// One log panel for Put, Get and System, to the right of the settings tabs.
+	private JLogPanel panel_Log_Scrollable;
+	private JScrollPane scrollPane_Log;
+	private JSplitPane splitPane;
+	private JCheckBox4j checkBx_ShowSystem_Log;
+	private JCheckBox4j checkBx_ShowPut_Log;
+	private JCheckBox4j checkBx_ShowGet_Log;
 	private JScrollPane scrollPane_Properties;
 	private JScrollPane scrollPane_Email;
 	private JScrollPane scrollPanel_Distribution;
 
-	private int maxLogRows = 100;
-	private int actualPutLogRows = 0;
-	private int actualGetLogRows = 0;
-	private int actualSystemLogRows = 0;
+	// Rows kept in the log panel - the three logs used to keep 100 each.
+	private static final int maxLogRows = 300;
+
+	// The settings tabs are laid out by hand (null layout) and so report no size of
+	// their own; this is the width their widest row needs (the button columns on the
+	// Put and Get tabs and the property tables end at 547), and the split pane divider
+	// starts here. The log panel has the rest of the window.
+	private static final int TAB_PANEL_WIDTH = 560;
+	private static final int LOG_PANEL_MIN_WIDTH = 240; // the Log Level strip needs 225
+
+	// Display level of the log panel (JLogPanel.LEVEL_*). Written on the Swing thread
+	// from the Log Level combo, read by the Put and Get threads. Remembered in sftp_common.xml
+	// (logLevel) the moment it changes - it is a view setting, outside Apply/Save/Reload.
+	private volatile int logLevel = JLogPanel.LEVEL_NORMAL;
+	private DefaultComboBoxModel<String> logLevelModel;
 
 	private SettingsCommon settingsCommon = new SettingsCommon();
 	private SettingsPut settingsPut = new SettingsPut();
@@ -197,33 +226,86 @@ public class JFrameSFTPTransfer extends JFrame
 	private JschCommands jcmd = new JschCommands(JschCommands.LogDestination_NoGUI);
 
 	private JButton4j btn_Apply;
-	private JButton4j btn_Save;
 	private JButton4j btn_Reload;
 
 	// Fingerprints of the settings form as last saved to disk and as last handed to the threads.
 	// Apply, Save and Reload are only enabled while the form differs from the matching one.
 	private String savedFingerprint = null;
-	private String appliedFingerprint = null;
 	// Weak so that row panels replaced by a reload can be collected.
 	private Set<Component> changeWiredComponents = Collections.newSetFromMap(new WeakHashMap<Component, Boolean>());
 
-	// Reports on the status line once the transfer threads have taken up settings handed to them.
+	// How long Apply waits for a service on this machine to collect its reload request before concluding there is none.
+	private static final long RELOAD_REQUEST_WAIT_MS = 5000;
+
+	private Instant reloadRequestedAt = null;
+
+	// Reports on the status line once this program's threads have taken up the settings handed to them,
+	// then once more when a service on this machine has collected the reload request - or when none has.
 	private javax.swing.Timer applyTimer = new javax.swing.Timer(200, new ActionListener()
 	{
 		public void actionPerformed(ActionEvent e)
 		{
 			if ((Start.transferPut.isSettingsPending() == false) && (Start.transferGet.isSettingsPending() == false))
 			{
-				applyTimer.stop();
-
-				if (appliedSettingsSaved())
+				if (reloadRequestedAt == null)
 				{
+					applyTimer.stop();
+
 					displayMessage("Settings saved and applied.", messageType_INFO);
 				}
-				else
+				else if (ReloadRequest.isPending() == false)
 				{
-					displayMessage("Settings applied but not saved - a restart returns to the saved settings.", messageType_WARN);
+					applyTimer.stop();
+					reloadRequestedAt = null;
+
+					writeToSystemLog("Reload request collected by a service on this machine.", JLogPanel.INFO);
+
+					displayMessage("Settings saved and applied - a service on this machine has collected the reload request.", messageType_INFO);
 				}
+				else if (Duration.between(reloadRequestedAt, Instant.now()).toMillis() > RELOAD_REQUEST_WAIT_MS)
+				{
+					applyTimer.stop();
+					reloadRequestedAt = null;
+
+					if (ReloadRequest.clear())
+					{
+						writeToSystemLog("Reload request not collected - no service running on this machine, request removed.", JLogPanel.INFO);
+					}
+					else
+					{
+						writeToSystemLog("Reload request not collected and could not be removed : " + ReloadRequest.getFile().getPath(), JLogPanel.WARN);
+					}
+
+					displayMessage("Settings saved and applied - no service is running on this machine.", messageType_INFO);
+				}
+			}
+		}
+	});
+
+	// Looks for a service on this machine every 2 s and switches the window between "alone" and "beside a service".
+	private javax.swing.Timer serviceTimer = new javax.swing.Timer(2000, new ActionListener()
+	{
+		public void actionPerformed(ActionEvent e)
+		{
+			boolean present = ServiceLock.isHeldElsewhere();
+
+			// A probe which fails says nothing either way - reported once, so "alone" is not silently assumed.
+			String probeError = ServiceLock.getLastProbeError();
+
+			if ((probeError != null) && (serviceProbeFailing == false))
+			{
+				serviceProbeFailing = true;
+				writeToSystemLog("Service lock probe failed - cannot tell whether a service is running on this machine : " + probeError, JLogPanel.WARN);
+			}
+			else if (probeError == null)
+			{
+				serviceProbeFailing = false;
+			}
+
+			if (present != servicePresent)
+			{
+				servicePresent = present;
+				servicePresenceChanged();
 			}
 		}
 	});
@@ -307,28 +389,14 @@ public class JFrameSFTPTransfer extends JFrame
 		email_Tab_Panel.setBorder(null);
 
 
-		panel_Log_Put_Scrollable = new JLogPanel();
-		panel_Log_Put_Scrollable.setVisible(true);
-		panel_Log_Put_Scrollable.setLayout(new BoxLayout(panel_Log_Put_Scrollable, BoxLayout.PAGE_AXIS));
+		panel_Log_Scrollable = new JLogPanel(maxLogRows);
+		panel_Log_Scrollable.setVisible(true);
+		panel_Log_Scrollable.setLayout(new BoxLayout(panel_Log_Scrollable, BoxLayout.PAGE_AXIS));
 
-		scrollPane_Put_Log = new JScrollPane(panel_Log_Put_Scrollable);
-		scrollPane_Put_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+		scrollPane_Log = new JScrollPane(panel_Log_Scrollable);
+		scrollPane_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
 
-		panel_Log_Get_Scrollable = new JLogPanel();
-		panel_Log_Get_Scrollable.setVisible(true);
-		panel_Log_Get_Scrollable.setLayout(new BoxLayout(panel_Log_Get_Scrollable, BoxLayout.PAGE_AXIS));
-
-		scrollPane_Get_Log = new JScrollPane(panel_Log_Get_Scrollable);
-		scrollPane_Get_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-
-		panel_Log_System_Scrollable = new JLogPanel();
-		panel_Log_System_Scrollable.setVisible(true);
-		panel_Log_System_Scrollable.setLayout(new BoxLayout(panel_Log_System_Scrollable,BoxLayout.PAGE_AXIS));
-
-		scrollPane_System_Log = new JScrollPane(panel_Log_System_Scrollable);
-		scrollPane_System_Log.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-
-		setSize(new Dimension(740, 570));
+		setSize(new Dimension(1100, 570));
 
 		contentPane = new JPanel();
 		contentPane.setBorder(new EmptyBorder(0, 0, 0, 0));
@@ -353,18 +421,27 @@ public class JFrameSFTPTransfer extends JFrame
 		messageLabel.setFont(Common.font_bold);
 		messageLabel.setForeground(Color.red);
 		messageLabel.setHorizontalAlignment(SwingConstants.LEFT);
-		messageLabel.setSize(new Dimension(740, 35));
-		messageLabel.setMinimumSize(new Dimension(740, 35));
+		messageLabel.setSize(new Dimension(1100, 35));
+		messageLabel.setMinimumSize(new Dimension(1100, 35));
 		statusPanel.add(messageLabel);
 
-		contentPane.add(statusPanel, BorderLayout.SOUTH);
+		serviceBanner = new JLabel4j_std("A service is running on this machine - transfers and the web log viewer are its job. Apply hands it the new settings.");
+		serviceBanner.setFont(Common.font_bold);
+		serviceBanner.setForeground(new Color(0, 100, 0));
+		serviceBanner.setBorder(new EmptyBorder(4, 10, 0, 10));
+		serviceBanner.setVisible(false);
 
-		contentPane.add(statusPanel, BorderLayout.SOUTH);
+		JPanel southPanel = new JPanel(new BorderLayout(0, 0));
+		southPanel.add(serviceBanner, BorderLayout.NORTH);
+		southPanel.add(statusPanel, BorderLayout.SOUTH);
+
+		contentPane.add(southPanel, BorderLayout.SOUTH);
 
 		toolBarRight.add(seperator);
 		toolBarRight.add(seperator);
 
-		JToggleButton4j btnStartStop = new JToggleButton4j(Common.icon_disconnected);
+		btnStartStop = new JToggleButton4j(Common.icon_disconnected);
+		btnStartStop.setToolTipText("Run or pause the transfers from this window");
 		btnStartStop.setPreferredSize(btn);
 		toolBarRight.add(btnStartStop);
 		btnStartStop.addActionListener(new ActionListener()
@@ -391,16 +468,55 @@ public class JFrameSFTPTransfer extends JFrame
 		tabbedPane.addTab("Get Properties", null, sftp_get_Tab_Panel, "SFTP Get Settings");
 		tabbedPane.addTab("jsch Properties", null, propertes_Tab_Panel, "SFTP Put");
 		tabbedPane.addTab("Email Properties", null,email_Tab_Panel, "Email Settings");
-		tabbedPane.addTab("Put Log", null, scrollPane_Put_Log, "Put Activity Log");
-		tabbedPane.addTab("Get Log", null, scrollPane_Get_Log, "Get Activity Log");
-		tabbedPane.addTab("System Log",null,scrollPane_System_Log,"System Log");
+		// The model behind the Log Level combo above the log panel.
+		// The saved level is selected before the listener is added, so starting up never writes the file.
+		logLevelModel = new DefaultComboBoxModel<String>(JLogPanel.LEVEL_NAMES);
+		logLevel = JLogPanel.levelOf(settingsCommon.logLevel.data);
+		logLevelModel.setSelectedItem(JLogPanel.LEVEL_NAMES[logLevel]);
+		logLevelModel.addListDataListener(new ListDataListener()
+		{
+			public void contentsChanged(ListDataEvent e)
+			{
+				int level = logLevelModel.getIndexOf(logLevelModel.getSelectedItem());
 
-		contentPane.add(tabbedPane, BorderLayout.CENTER);
+				if ((level >= 0) && (level != logLevel))
+				{
+					logLevel = level;
+
+					// Kept in the form's copy too, or the next Save would write the old level back.
+					settingsCommon.logLevel.data = JLogPanel.LEVEL_NAMES[level];
+					settingsUtil.saveSFTPCommonLogLevel(settingsCommon.logLevel.data);
+				}
+			}
+
+			public void intervalAdded(ListDataEvent e)
+			{
+			}
+
+			public void intervalRemoved(ListDataEvent e)
+			{
+			}
+		});
+
+		// Settings tabs on the left at the width their rows need, the log panel on the
+		// right with the rest; the divider can be dragged to give the log more room.
+		tabbedPane.setPreferredSize(new Dimension(TAB_PANEL_WIDTH, 10));
+		tabbedPane.setMinimumSize(new Dimension(TAB_PANEL_WIDTH, 10));
+
+		JPanel logSide = logSide(scrollPane_Log);
+		logSide.setMinimumSize(new Dimension(LOG_PANEL_MIN_WIDTH, 10));
+
+		splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tabbedPane, logSide);
+		splitPane.setResizeWeight(0);
+		splitPane.setContinuousLayout(true);
+		splitPane.setBorder(null);
+
+		contentPane.add(splitPane, BorderLayout.CENTER);
 
 		// JSCH PROPERTIES
 
 		scrollPane_Properties = new JScrollPane();
-		scrollPane_Properties.setBounds(50, 20, 585, 450);
+		scrollPane_Properties.setBounds(6, 20, 541, 450);
 		propertes_Tab_Panel.add(scrollPane_Properties);
 
 		panel_Properties_Scrollable = new JPanel();
@@ -408,15 +524,15 @@ public class JFrameSFTPTransfer extends JFrame
 		scrollPane_Properties.setViewportView(panel_Properties_Scrollable);
 
 
-		JLabel4j_std lbl_jschProperty_Title = new JLabel4j_std("Property                                                   Value                                                                                   Encrypt  Enable");
+		JLabel4j_std lbl_jschProperty_Title = new JLabel4j_std("Property                                                   Value                                                                          Encrypt  Enable");
 		lbl_jschProperty_Title.setFont(Common.font_bold);
-		lbl_jschProperty_Title.setBounds(scrollPane_Properties.getX() + 5, scrollPane_Properties.getY() - 20, 570, 30);
+		lbl_jschProperty_Title.setBounds(scrollPane_Properties.getX() + 5, scrollPane_Properties.getY() - 20, 536, 30);
 		propertes_Tab_Panel.add(lbl_jschProperty_Title);
 
 		// EMAIL
 
 		scrollPane_Email = new JScrollPane();
-		scrollPane_Email.setBounds(50, 20, 585, 250);
+		scrollPane_Email.setBounds(6, 20, 541, 250);
 		email_Tab_Panel.add(scrollPane_Email);
 
 		panel_Email_Scrollable = new JPanel();
@@ -424,15 +540,15 @@ public class JFrameSFTPTransfer extends JFrame
 		scrollPane_Email.setViewportView(panel_Email_Scrollable);
 
 
-		JLabel4j_std lbl_EmailProperty_Title = new JLabel4j_std("Property                                                   Value                                                                                   Encrypt  Enable");
+		JLabel4j_std lbl_EmailProperty_Title = new JLabel4j_std("Property                                                   Value                                                                          Encrypt  Enable");
 		lbl_EmailProperty_Title.setFont(Common.font_bold);
-		lbl_EmailProperty_Title.setBounds(scrollPane_Email.getX() + 5, scrollPane_Email.getY() - 20, 570, 30);
+		lbl_EmailProperty_Title.setBounds(scrollPane_Email.getX() + 5, scrollPane_Email.getY() - 20, 536, 30);
 		email_Tab_Panel.add(lbl_EmailProperty_Title);
 
 		// DISTRIBUTION
 
 		scrollPanel_Distribution = new JScrollPane();
-		scrollPanel_Distribution.setBounds(50, 290, 585, 170);
+		scrollPanel_Distribution.setBounds(6, 290, 541, 170);
 		email_Tab_Panel.add(scrollPanel_Distribution);
 
 		panel_Distribution_Scrollable = new JPanel();
@@ -440,9 +556,9 @@ public class JFrameSFTPTransfer extends JFrame
 		scrollPanel_Distribution.setViewportView(panel_Distribution_Scrollable);
 
 
-		JLabel4j_std lbl_Distribution_Title = new JLabel4j_std("ID                     Address List                                                                                                    Frequency        Enable");
+		JLabel4j_std lbl_Distribution_Title = new JLabel4j_std("ID                     Address List                                                                                        Frequency        Enable");
 		lbl_Distribution_Title.setFont(Common.font_bold);
-		lbl_Distribution_Title.setBounds(scrollPanel_Distribution.getX() + 5, scrollPanel_Distribution.getY() - 20, 570, 30);
+		lbl_Distribution_Title.setBounds(scrollPanel_Distribution.getX() + 5, scrollPanel_Distribution.getY() - 20, 536, 30);
 		email_Tab_Panel.add(lbl_Distribution_Title);
 
 		// COMMON
@@ -483,7 +599,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_common_Tab_Panel.add(comboBox_Authentication_Type_Common);
 
 		fld_Title_Common = new JTextField4j();
-		fld_Title_Common.setBounds(161, 10, 489, 23);
+		fld_Title_Common.setBounds(161, 10, 386, 23);
 		sftp_common_Tab_Panel.add(fld_Title_Common);
 
 		fld_HostAddress_Common = new JTextField4j();
@@ -495,7 +611,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_common_Tab_Panel.add(fld_Port_Common);
 
 		fld_KnownHostsFile_Common = new JTextField4j();
-		fld_KnownHostsFile_Common.setBounds(184, 100, 466, 23);
+		fld_KnownHostsFile_Common.setBounds(184, 100, 211, 23);
 		sftp_common_Tab_Panel.add(fld_KnownHostsFile_Common);
 
 		chkbox_AddKnownHosts_Common = new JCheckBox4j("");
@@ -542,12 +658,12 @@ public class JFrameSFTPTransfer extends JFrame
 
 		///////////////
 		fld_PrivateKeyFile_Common = new JTextField4j();
-		fld_PrivateKeyFile_Common.setBounds(184, 250, 466, 23);
+		fld_PrivateKeyFile_Common.setBounds(184, 250, 211, 23);
 		sftp_common_Tab_Panel.add(fld_PrivateKeyFile_Common);
 
 		///////////////
 		fld_PublicKeyFile_Common = new JTextField4j();
-		fld_PublicKeyFile_Common.setBounds(184, 310, 466, 23);
+		fld_PublicKeyFile_Common.setBounds(184, 310, 211, 23);
 		sftp_common_Tab_Panel.add(fld_PublicKeyFile_Common);
 
 		///////////////
@@ -557,7 +673,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		///////////////
 		fld_PrivateKeyPassword_Common = new JPasswordField4j();
-		fld_PrivateKeyPassword_Common.setBounds(184, 280, 180, 23);
+		fld_PrivateKeyPassword_Common.setBounds(184, 280, 150, 23);
 		sftp_common_Tab_Panel.add(fld_PrivateKeyPassword_Common);
 
 		///////////////
@@ -615,7 +731,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_KnownHostsFile_Common.setText(selectFile(fld_KnownHostsFile_Common.getText(), "Known Hosts", ""));
 			}
 		});
-		btn_KnownHostsSelect_Common.setBounds(648, 95, 30, 30);
+		btn_KnownHostsSelect_Common.setBounds(395, 95, 30, 30);
 		sftp_common_Tab_Panel.add(btn_KnownHostsSelect_Common);
 
 		btn_PrivateKeySelect_Common = new JButton4j(Common.icon_select_folder);
@@ -626,7 +742,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_PrivateKeyFile_Common.setText(selectFile(fld_PrivateKeyFile_Common.getText(), "Private Key (.pem)", "pem"));
 			}
 		});
-		btn_PrivateKeySelect_Common.setBounds(648, 245, 30, 30);
+		btn_PrivateKeySelect_Common.setBounds(395, 245, 30, 30);
 		sftp_common_Tab_Panel.add(btn_PrivateKeySelect_Common);
 
 		btn_PublicKeySelect_Common = new JButton4j(Common.icon_select_folder);
@@ -637,7 +753,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_PublicKeyFile_Common.setText(selectFile(fld_PublicKeyFile_Common.getText(), "Public Key (.pub)", "pub"));
 			}
 		});
-		btn_PublicKeySelect_Common.setBounds(648, 305, 30, 30);
+		btn_PublicKeySelect_Common.setBounds(395, 305, 30, 30);
 		sftp_common_Tab_Panel.add(btn_PublicKeySelect_Common);
 
 		btn_PrivateKeyCreate_Common = new JButton4j(Common.icon_create_key);
@@ -753,7 +869,7 @@ public class JFrameSFTPTransfer extends JFrame
 				}
 			}
 		});
-		btn_PrivateKeyCreate_Common.setBounds(425, 275, 30, 30);
+		btn_PrivateKeyCreate_Common.setBounds(395, 275, 30, 30);
 		sftp_common_Tab_Panel.add(btn_PrivateKeyCreate_Common);
 
 		JLabel4j_std lbl_EmailEnable_Common = new JLabel4j_std("Email Notifications");
@@ -761,7 +877,7 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_EmailEnable_Common.setBounds(0, 370, 149, 27);
 		sftp_common_Tab_Panel.add(lbl_EmailEnable_Common);
 
-		// WEB LOG VIEWER - a read-only page showing the three log tabs, for service installs.
+		// WEB LOG VIEWER - a read-only page showing the three logs, for service installs.
 
 		JLabel4j_std lbl_WebEnable_Common = new JLabel4j_std("Web Log Viewer");
 		lbl_WebEnable_Common.setHorizontalAlignment(SwingConstants.TRAILING);
@@ -790,7 +906,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		JLabel4j_std lbl_WebHint_Common = new JLabel4j_std("http://<this host>:<port>/  (read only, no login)");
 		lbl_WebHint_Common.setFont(Common.font_italic);
-		lbl_WebHint_Common.setBounds(335, 430, 315, 27);
+		lbl_WebHint_Common.setBounds(190, 455, 300, 27);
 		sftp_common_Tab_Panel.add(lbl_WebHint_Common);
 
 		checkBx_WebEnabled_Common.addItemListener(new ItemListener()
@@ -829,11 +945,11 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(checkBx_BackupEnable_Put);
 
 		fld_Title_Put = new JTextField4j();
-		fld_Title_Put.setBounds(161, 40, 489, 23);
+		fld_Title_Put.setBounds(161, 40, 386, 23);
 		sftp_put_Tab_Panel.add(fld_Title_Put);
 
 		fld_LocalFolder_Put = new JTextField4j();
-		fld_LocalFolder_Put.setBounds(161, 70, 429, 23);
+		fld_LocalFolder_Put.setBounds(161, 70, 296, 23);
 		sftp_put_Tab_Panel.add(fld_LocalFolder_Put);
 
 		JLabel4j_std lbl_LocalFolder_Put = new JLabel4j_std("Local Folder");
@@ -843,6 +959,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		fld_LocalMask_Put = new JTextField4j();
 		fld_LocalMask_Put.setBounds(161, 100, 184, 23);
+		fld_LocalMask_Put.setToolTipText("Wildcards * and ? - separate several masks with ; for example *.xml;*.csv");
 		sftp_put_Tab_Panel.add(fld_LocalMask_Put);
 
 		JLabel4j_std lbl_LocalMask_Put = new JLabel4j_std("Local File Mask");
@@ -851,7 +968,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(lbl_LocalMask_Put);
 
 		fld_BackupFolder_Put = new JTextField4j();
-		fld_BackupFolder_Put.setBounds(196, 130, 454, 23);
+		fld_BackupFolder_Put.setBounds(196, 130, 321, 23);
 		sftp_put_Tab_Panel.add(fld_BackupFolder_Put);
 
 		JLabel4j_std lbl_BackupFolder_Put = new JLabel4j_std("Backup Folder");
@@ -895,7 +1012,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(lbl_PollFrequencyUnit_Put);
 
 		fld_RemoteFolder_Put = new JTextField4j();
-		fld_RemoteFolder_Put.setBounds(161, 220, 429, 23);
+		fld_RemoteFolder_Put.setBounds(161, 220, 296, 23);
 		sftp_put_Tab_Panel.add(fld_RemoteFolder_Put);
 
 		JLabel4j_std lbl_RemoteFolder_Put = new JLabel4j_std("Remote Folder");
@@ -922,7 +1039,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(checkBx_SubFolders_Put);
 
 		JLabel4j_std lbl_SubFoldersHint_Put = new JLabel4j_std("Also send files from folders beneath the local folder");
-		lbl_SubFoldersHint_Put.setBounds(196, 280, 454, 27);
+		lbl_SubFoldersHint_Put.setBounds(196, 280, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SubFoldersHint_Put);
 
 		JLabel4j_std lbl_Sync_Put = new JLabel4j_std("Sync Mode");
@@ -935,7 +1052,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(checkBx_Sync_Put);
 
 		JLabel4j_std lbl_SyncHint_Put = new JLabel4j_std("Copy new or changed files and leave the local files in place");
-		lbl_SyncHint_Put.setBounds(196, 310, 454, 27);
+		lbl_SyncHint_Put.setBounds(196, 310, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncHint_Put);
 
 		JLabel4j_std lbl_SyncDelete_Put = new JLabel4j_std("Sync Deletions");
@@ -949,7 +1066,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(checkBx_SyncDelete_Put);
 
 		JLabel4j_std lbl_SyncDeleteHint_Put = new JLabel4j_std("Also delete remote files which are no longer in the local folder");
-		lbl_SyncDeleteHint_Put.setBounds(196, 340, 454, 27);
+		lbl_SyncDeleteHint_Put.setBounds(196, 340, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteHint_Put);
 
 		JLabel4j_std lbl_SyncDeleteFolders_Put = new JLabel4j_std("Sync Folder Deletions");
@@ -962,7 +1079,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(checkBx_SyncDeleteFolders_Put);
 
 		JLabel4j_std lbl_SyncDeleteFoldersHint_Put = new JLabel4j_std("Also remove remote folders which are no longer in the local folder");
-		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 370, 454, 27);
+		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 370, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Put);
 
 		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
@@ -979,6 +1096,10 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Put.addActionListener(syncDeleteStateListener_Put);
 		checkBx_SyncDelete_Put.addActionListener(syncDeleteStateListener_Put);
 
+		checkBx_Stability_Put = new JCheckBox4j("");
+		spinner_StabilitySeconds_Put = new JSpinner4j();
+		addStabilityRow(sftp_put_Tab_Panel, 400, checkBx_Stability_Put, spinner_StabilitySeconds_Put, settingsPut.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+
 		JButton4j btn_LocalFolderSelect_Put = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Put.addActionListener(new ActionListener()
 		{
@@ -987,7 +1108,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_LocalFolder_Put.setText(selectFolder(fld_LocalFolder_Put.getText()));
 			}
 		});
-		btn_LocalFolderSelect_Put.setBounds(588, 65, 30, 30);
+		btn_LocalFolderSelect_Put.setBounds(457, 65, 30, 30);
 		sftp_put_Tab_Panel.add(btn_LocalFolderSelect_Put);
 
 		addSafeFileButtons(sftp_put_Tab_Panel, fld_LocalFolder_Put, 65, false);
@@ -1000,7 +1121,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_BackupFolder_Put.setText(selectFolder(fld_BackupFolder_Put.getText()));
 			}
 		});
-		btn_BackupFolderSelect_Put.setBounds(648, 125, 30, 30);
+		btn_BackupFolderSelect_Put.setBounds(517, 125, 30, 30);
 		sftp_put_Tab_Panel.add(btn_BackupFolderSelect_Put);
 
 		JButton4j btn_RemoteFolderSelect_Put = new JButton4j(Common.icon_select_folder);
@@ -1008,10 +1129,10 @@ public class JFrameSFTPTransfer extends JFrame
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				fld_RemoteFolder_Put.setText(jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", fld_RemoteFolder_Put.getText()));
+				browseRemoteFolder(fld_RemoteFolder_Put);
 			}
 		});
-		btn_RemoteFolderSelect_Put.setBounds(588, 215, 30, 30);
+		btn_RemoteFolderSelect_Put.setBounds(457, 215, 30, 30);
 		sftp_put_Tab_Panel.add(btn_RemoteFolderSelect_Put);
 
 		addSafeFileButtons(sftp_put_Tab_Panel, fld_RemoteFolder_Put, 215, true);
@@ -1028,7 +1149,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_Enabled_Get);
 
 		fld_LocalFolder_Get = new JTextField4j();
-		fld_LocalFolder_Get.setBounds(161, 160, 429, 23);
+		fld_LocalFolder_Get.setBounds(161, 160, 296, 23);
 		sftp_get_Tab_Panel.add(fld_LocalFolder_Get);
 
 		JLabel4j_std lbl_LocalFolder_Get = new JLabel4j_std("Local Folder");
@@ -1038,6 +1159,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		fld_Remote_Mask_Get = new JTextField4j();
 		fld_Remote_Mask_Get.setBounds(161, 100, 184, 23);
+		fld_Remote_Mask_Get.setToolTipText("Wildcards * and ? - separate several masks with ; for example *.xml;*.csv");
 		sftp_get_Tab_Panel.add(fld_Remote_Mask_Get);
 
 		JLabel4j_std lbl_RemoteMask_Get = new JLabel4j_std("Local File Mask");
@@ -1065,11 +1187,11 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(lbl_PollFrequencyUnit_Get);
 
 		fld_Title_Get = new JTextField4j();
-		fld_Title_Get.setBounds(161, 40, 489, 23);
+		fld_Title_Get.setBounds(161, 40, 386, 23);
 		sftp_get_Tab_Panel.add(fld_Title_Get);
 
 		fld_RemoteFolder_Get = new JTextField4j();
-		fld_RemoteFolder_Get.setBounds(161, 70, 429, 23);
+		fld_RemoteFolder_Get.setBounds(161, 70, 296, 23);
 		sftp_get_Tab_Panel.add(fld_RemoteFolder_Get);
 
 		JLabel4j_std lbl_Title_Get = new JLabel4j_std("Title");
@@ -1101,7 +1223,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_SubFolders_Get);
 
 		JLabel4j_std lbl_SubFoldersHint_Get = new JLabel4j_std("Also fetch files from folders beneath the remote folder");
-		lbl_SubFoldersHint_Get.setBounds(196, 220, 454, 27);
+		lbl_SubFoldersHint_Get.setBounds(196, 220, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SubFoldersHint_Get);
 
 		JLabel4j_std lbl_Sync_Get = new JLabel4j_std("Sync Mode");
@@ -1114,7 +1236,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_Sync_Get);
 
 		JLabel4j_std lbl_SyncHint_Get = new JLabel4j_std("Copy new or changed files and leave the remote files in place");
-		lbl_SyncHint_Get.setBounds(196, 250, 454, 27);
+		lbl_SyncHint_Get.setBounds(196, 250, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncHint_Get);
 
 		JLabel4j_std lbl_SyncDelete_Get = new JLabel4j_std("Sync Deletions");
@@ -1128,7 +1250,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_SyncDelete_Get);
 
 		JLabel4j_std lbl_SyncDeleteHint_Get = new JLabel4j_std("Also delete local files which are no longer in the remote folder");
-		lbl_SyncDeleteHint_Get.setBounds(196, 280, 454, 27);
+		lbl_SyncDeleteHint_Get.setBounds(196, 280, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteHint_Get);
 
 		JLabel4j_std lbl_SyncDeleteFolders_Get = new JLabel4j_std("Sync Folder Deletions");
@@ -1141,7 +1263,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_get_Tab_Panel.add(checkBx_SyncDeleteFolders_Get);
 
 		JLabel4j_std lbl_SyncDeleteFoldersHint_Get = new JLabel4j_std("Also remove local folders which are no longer in the remote folder");
-		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 310, 454, 27);
+		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 310, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Get);
 
 		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
@@ -1158,6 +1280,10 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Get.addActionListener(syncDeleteStateListener_Get);
 		checkBx_SyncDelete_Get.addActionListener(syncDeleteStateListener_Get);
 
+		checkBx_Stability_Get = new JCheckBox4j("");
+		spinner_StabilitySeconds_Get = new JSpinner4j();
+		addStabilityRow(sftp_get_Tab_Panel, 340, checkBx_Stability_Get, spinner_StabilitySeconds_Get, settingsGet.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+
 		JButton4j btn_LocalFolderSelect_Get = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Get.addActionListener(new ActionListener()
 		{
@@ -1166,7 +1292,7 @@ public class JFrameSFTPTransfer extends JFrame
 				fld_LocalFolder_Get.setText(selectFolder(fld_LocalFolder_Get.getText()));
 			}
 		});
-		btn_LocalFolderSelect_Get.setBounds(588, 155, 30, 30);
+		btn_LocalFolderSelect_Get.setBounds(457, 155, 30, 30);
 		sftp_get_Tab_Panel.add(btn_LocalFolderSelect_Get);
 
 		addSafeFileButtons(sftp_get_Tab_Panel, fld_LocalFolder_Get, 155, false);
@@ -1176,10 +1302,10 @@ public class JFrameSFTPTransfer extends JFrame
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				fld_RemoteFolder_Get.setText(jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", fld_RemoteFolder_Get.getText()));
+				browseRemoteFolder(fld_RemoteFolder_Get);
 			}
 		});
-		btn_RemoteFolderSelect_Get.setBounds(588, 65, 30, 30);
+		btn_RemoteFolderSelect_Get.setBounds(457, 65, 30, 30);
 		sftp_get_Tab_Panel.add(btn_RemoteFolderSelect_Get);
 
 		addSafeFileButtons(sftp_get_Tab_Panel, fld_RemoteFolder_Get, 65, true);
@@ -1187,7 +1313,7 @@ public class JFrameSFTPTransfer extends JFrame
 		// *******
 
 		btn_Apply = new JButton4j(Common.icon_ok);
-		btn_Apply.setToolTipText("Apply settings without saving");
+		btn_Apply.setToolTipText("Save and apply settings - a service running on this machine reloads them too");
 		btn_Apply.addActionListener(new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
@@ -1198,25 +1324,13 @@ public class JFrameSFTPTransfer extends JFrame
 		btn_Apply.setPreferredSize(btn);
 		toolBarRight.add(btn_Apply);
 
-		btn_Save = new JButton4j(Common.icon_save);
-		btn_Save.setToolTipText("Save settings without applying");
-		btn_Save.addActionListener(new ActionListener()
-		{
-			public void actionPerformed(ActionEvent e)
-			{
-				saveChanges();
-			}
-		});
-		btn_Save.setPreferredSize(btn);
-		toolBarRight.add(btn_Save);
-
 		btn_Reload = new JButton4j(Common.icon_reload);
-		btn_Reload.setToolTipText("Reload saved settings (discard unsaved changes)");
+		btn_Reload.setToolTipText("Reload saved settings (discard changes not yet applied)");
 		btn_Reload.addActionListener(new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Discard unsaved changes and reload the saved settings ?", "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
+				int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, "Discard the changes not yet applied and reload the saved settings ?", "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
 
 				if (question == 0)
 				{
@@ -1327,7 +1441,7 @@ public class JFrameSFTPTransfer extends JFrame
 		btnClearPassword.setToolTipText("Clear Applicatiion Password");
 
 		btnClearPrivateKeyPassword = new JButton4j();
-		btnClearPrivateKeyPassword.setBounds(395, 275, 30, 30);
+		btnClearPrivateKeyPassword.setBounds(365, 275, 30, 30);
 		sftp_common_Tab_Panel.add(btnClearPrivateKeyPassword);
 		btnClearPrivateKeyPassword.setIcon(Common.icon_erase);
 		btnClearPrivateKeyPassword.addActionListener(new ActionListener()
@@ -1384,7 +1498,7 @@ public class JFrameSFTPTransfer extends JFrame
 				settingsCommon.privateKeyPassword.data = changePassword.enteredPassword;
 			}
 		});
-		btn_PrivateKeyPassword.setBounds(365, 275, 30, 30);
+		btn_PrivateKeyPassword.setBounds(335, 275, 30, 30);
 		sftp_common_Tab_Panel.add(btn_PrivateKeyPassword);
 
 		populateFromSettings();
@@ -1392,9 +1506,8 @@ public class JFrameSFTPTransfer extends JFrame
 		// Wired after the form is populated so that loading does not count as a change.
 		wireChangeListeners();
 
-		// The threads read the same files at start-up, so saved, applied and shown all agree here.
+		// The threads read the same files at start-up, so saved and shown agree here.
 		savedFingerprint = currentFingerprint();
-		appliedFingerprint = savedFingerprint;
 		refreshSettingsButtons();
 
 		setLocationRelativeTo(null);
@@ -1412,6 +1525,62 @@ public class JFrameSFTPTransfer extends JFrame
 				JFrameSFTPTransfer.this.getHeight() + heightadjustment);
 		setVisible(true);
 
+		// The first look comes soon after the threads exist (Start creates them right after this constructor).
+		serviceTimer.setInitialDelay(500);
+		serviceTimer.start();
+	}
+
+	/**
+	 * A service has appeared on, or gone from, this machine. While it is
+	 * there transfers are its job: the Run button is disabled, transfers
+	 * running from this window are paused (the current pass completes first,
+	 * as on any pause - a pause is only taken up between passes), and the web
+	 * viewer is left to the service. When it goes the window is on its own
+	 * again and gets everything back.
+	 */
+	private void servicePresenceChanged()
+	{
+		if (servicePresent)
+		{
+			writeToSystemLog("Service detected on this machine (" + ServiceLock.FILENAME + " is held) - transfers and the web viewer are its job.", JLogPanel.INFO);
+
+			serviceBanner.setVisible(true);
+
+			if (btnStartStop.isSelected())
+			{
+				btnStartStop.setSelected(false);
+				btnStartStop.setIcon(Common.icon_disconnected);
+
+				if (Start.transferPut != null)
+				{
+					Start.transferPut.requestMode(TransferPUT.Mode_PAUSE);
+					Start.transferGet.requestMode(TransferPUT.Mode_PAUSE);
+				}
+
+				writeToSystemLog("Transfers from this window paused - the service has taken over.", JLogPanel.WARN);
+				displayMessage("Transfers from this window paused - the service has taken over.", messageType_WARN);
+			}
+
+			btnStartStop.setEnabled(false);
+			btnStartStop.setToolTipText("Transfers are being run by the service on this machine");
+		}
+		else
+		{
+			writeToSystemLog("No service running on this machine - transfers may be run from this window.", JLogPanel.INFO);
+
+			serviceBanner.setVisible(false);
+
+			btnStartStop.setEnabled(true);
+			btnStartStop.setToolTipText("Run or pause the transfers from this window");
+		}
+
+		// Stops this window's viewer while a service is there, starts it again (if wanted) when the service has gone.
+		if (Start.transferPut != null)
+		{
+			Start.applyWebSettings(Boolean.valueOf(settingsCommon.webEnabled.data), WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), settingsCommon.title.data);
+		}
+
+		contentPane.revalidate();
 	}
 
 	public boolean confirmExit()
@@ -1422,11 +1591,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		if (hasUnsavedChanges())
 		{
-			message = "Settings have been changed but not saved.\nThe changes will be lost on exit.\n\nExit application ?";
-		}
-		else if (appliedSettingsSaved() == false)
-		{
-			message = "Settings have been applied but not saved.\nThey will be lost on exit.\n\nExit application ?";
+			message = "Settings have been changed but not applied.\nThe changes will be lost on exit.\n\nExit application ?";
 		}
 
 		int question = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, message, "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm);
@@ -1452,72 +1617,118 @@ public class JFrameSFTPTransfer extends JFrame
 
 	}
 
+	/**
+	 * The log side of the window: the scrolling rows beneath two strips - the Log
+	 * Level combo, then the System / Put / Get check boxes (no caption, Dave's
+	 * choice 2026-10-12) which hide or show that
+	 * log's rows (the ones already on screen as well as the ones to come). The
+	 * boxes start ticked at every start-up; only the level is remembered.
+	 */
+	private JPanel logSide(JScrollPane rows)
+	{
+		JLabel4j_std lbl_Show = new JLabel4j_std("Log Level");
+
+		JComboBox4j<String> comboBox_Level = new JComboBox4j<String>();
+		comboBox_Level.setModel(logLevelModel);
+		comboBox_Level.setPreferredSize(new Dimension(160, 23));
+		comboBox_Level.setToolTipText("Detail shown in the log from now on - Debug adds the polling of the remote folders");
+
+		JPanel levelStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
+		levelStrip.add(lbl_Show);
+		levelStrip.add(comboBox_Level);
+
+		checkBx_ShowSystem_Log = logCheckBox("System", JschCommands.LogDestination_SYS, "Show the System log lines");
+		checkBx_ShowPut_Log = logCheckBox("Put", JschCommands.LogDestination_PUT, "Show the Put log lines");
+		checkBx_ShowGet_Log = logCheckBox("Get", JschCommands.LogDestination_GET, "Show the Get log lines");
+
+		JPanel showStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+		showStrip.add(checkBx_ShowSystem_Log);
+		showStrip.add(checkBx_ShowPut_Log);
+		showStrip.add(checkBx_ShowGet_Log);
+
+		JPanel strips = new JPanel();
+		strips.setLayout(new BoxLayout(strips, BoxLayout.PAGE_AXIS));
+		levelStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
+		showStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
+		strips.add(levelStrip);
+		strips.add(showStrip);
+
+		JPanel side = new JPanel(new BorderLayout(0, 0));
+		side.add(strips, BorderLayout.NORTH);
+		side.add(rows, BorderLayout.CENTER);
+
+		return side;
+	}
+
+	private JCheckBox4j logCheckBox(String caption, int tag, String tip)
+	{
+		JCheckBox4j box = new JCheckBox4j();
+		box.init();
+		box.setText(caption);
+		box.setToolTipText(tip);
+		box.setSelected(true);
+		box.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				panel_Log_Scrollable.setTagVisible(tag, box.isSelected());
+				scrollLogToEnd();
+			}
+		});
+
+		return box;
+	}
+
+	/**
+	 * Rows below the display level are not added at all - the maxLogRows trimming
+	 * only sees what passed the level. A row whose log is unticked is added hidden
+	 * and comes back when the box is ticked again. The file and the web viewer
+	 * have already had the line by the time it gets here.
+	 */
 	public void writeToLog(int logDestination,String logdata, int level)
 	{
+		if (JLogPanel.shows(logLevel, level) == false)
+		{
+			return;
+		}
+
+		String prefix;
+
 		switch (logDestination)
 		{
-		case JschCommands.LogDestination_NoGUI:
-			break;
 		case JschCommands.LogDestination_PUT:
-			writeToPutLog(logdata, level);
+			prefix = "[PUT] ";
 			break;
 		case JschCommands.LogDestination_GET:
-			writeToGetLog(logdata, level);
+			prefix = "[GET] ";
 			break;
 		case JschCommands.LogDestination_SYS:
-			appendSystemLog(logdata, level);
+			prefix = "[SYS] ";
 			break;
+		default:
+			return;
 		}
-	}
-
-	private void writeToPutLog(String logdata, int level)
-	{
-		actualPutLogRows++;
 
 		SwingUtilities.invokeLater(() -> {
 
-			panel_Log_Put_Scrollable.addLog(logdata,level);
-
-			if (actualPutLogRows > maxLogRows)
-			{
-				panel_Log_Put_Scrollable.remove(0);
-				actualPutLogRows = maxLogRows;
-			}
-
-			JScrollBar vertical = scrollPane_Put_Log.getVerticalScrollBar();
-			vertical.setValue(vertical.getMaximum());
-
-			panel_Log_Put_Scrollable.revalidate();
-			panel_Log_Put_Scrollable.repaint();
+			panel_Log_Scrollable.addLog(prefix + logdata, level, logDestination);
+			scrollLogToEnd();
 		});
 	}
 
-	private void writeToGetLog(String logdata, int level)
+	private void scrollLogToEnd()
 	{
-		actualGetLogRows++;
+		panel_Log_Scrollable.revalidate();
+		panel_Log_Scrollable.repaint();
 
-		SwingUtilities.invokeLater(() -> {
-
-			panel_Log_Get_Scrollable.addLog(logdata,level);
-
-			if (actualGetLogRows > maxLogRows)
-			{
-				panel_Log_Get_Scrollable.remove(0);
-				actualGetLogRows = maxLogRows;
-			}
-
-			JScrollBar vertical = scrollPane_Get_Log.getVerticalScrollBar();
-			vertical.setValue(vertical.getMaximum());
-
-			panel_Log_Get_Scrollable.revalidate();
-			panel_Log_Get_Scrollable.repaint();
-		});
+		JScrollBar vertical = scrollPane_Log.getVerticalScrollBar();
+		vertical.setValue(vertical.getMaximum());
 	}
 
 	/**
 	 * The frame's own System log lines (saving, applying, reloading ...) go
 	 * through JschCommands so they also reach the log file and the web viewer,
-	 * which then hands them back to appendSystemLog for the tab.
+	 * which then hands them back to writeToLog for the panel.
 	 */
 	private void writeToSystemLog(String logdata, int level)
 	{
@@ -1526,31 +1737,8 @@ public class JFrameSFTPTransfer extends JFrame
 		if (Start.gui == null)
 		{
 			// Still inside the constructor - nothing hands the line back yet.
-			appendSystemLog(logdata, level);
+			writeToLog(JschCommands.LogDestination_SYS, logdata, level);
 		}
-	}
-
-	private void appendSystemLog(String logdata, int level)
-	{
-		actualSystemLogRows++;
-
-
-		SwingUtilities.invokeLater(() -> {
-
-			panel_Log_System_Scrollable.addLog(logdata,level);
-
-			if (actualSystemLogRows > maxLogRows)
-			{
-				panel_Log_System_Scrollable.remove(0);
-				actualSystemLogRows = maxLogRows;
-			}
-
-			JScrollBar vertical = scrollPane_System_Log.getVerticalScrollBar();
-			vertical.setValue(vertical.getMaximum());
-
-			panel_Log_System_Scrollable.revalidate();
-			panel_Log_System_Scrollable.repaint();
-		});
 	}
 
 	private void setPrivateKeyState(boolean state)
@@ -1581,6 +1769,65 @@ public class JFrameSFTPTransfer extends JFrame
 		fld_KnownHostsFile_Common.setEnabled(state);
 		btn_KnownHostsSelect_Common.setEnabled(state);
 		chkbox_AddKnownHosts_Common.setEnabled(state);
+	}
+
+	/**
+	 * The Stability Check row of a Put or Get tab: tick box, seconds spinner
+	 * (only live when ticked) and a hint. The thread waits that many seconds,
+	 * then leaves alone any file whose size or modified time has changed since
+	 * it was found.
+	 */
+	private void addStabilityRow(JPanel panel, int y, JCheckBox4j check, JSpinner4j spinner, String seconds, String hint)
+	{
+		JLabel4j_std lbl_Stability = new JLabel4j_std("Stability Check");
+		lbl_Stability.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_Stability.setBounds(6, y, 143, 27);
+		panel.add(lbl_Stability);
+
+		check.setBounds(161, y, 23, 23);
+		check.setToolTipText("Only transfer a file once it has stopped changing");
+		panel.add(check);
+
+		spinner.setBounds(196, y, 67, 23);
+		spinner.setModel(new SpinnerNumberModel(stabilitySeconds(seconds), 1, 3600, 1));
+		spinner.setToolTipText("How long a file must stay the same size and time before it is transferred");
+		spinner.setEnabled(check.isSelected());
+		panel.add(spinner);
+
+		JLabel4j_std lbl_Unit = new JLabel4j_std("Seconds");
+		lbl_Unit.setBounds(270, y, 63, 27);
+		panel.add(lbl_Unit);
+
+		// The hint sits on the row beneath, so the tab stays narrow.
+		JLabel4j_std lbl_Hint = new JLabel4j_std(hint);
+		lbl_Hint.setFont(Common.font_italic);
+		lbl_Hint.setBounds(161, y + 30, 386, 27);
+		panel.add(lbl_Hint);
+
+		check.addItemListener(new ItemListener()
+		{
+			public void itemStateChanged(ItemEvent e)
+			{
+				spinner.setEnabled(check.isSelected());
+			}
+		});
+	}
+
+	/** The saved seconds value within the spinner's range; 5 if it is not a number. */
+	private static int stabilitySeconds(String value)
+	{
+		int result = 5;
+
+		try
+		{
+			result = Integer.parseInt(value.trim());
+		}
+		catch (Exception e)
+		{
+			result = 5;
+		}
+
+		return Math.max(1, Math.min(3600, result));
 	}
 
 	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders)
@@ -1780,6 +2027,8 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsPut.syncEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected());
 		settingsPut.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected());
 		settingsPut.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Put.isSelected() && checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected() && checkBx_SyncDeleteFolders_Put.isSelected());
+		settingsPut.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Put.isSelected());
+		settingsPut.stabilitySeconds.data = spinner_StabilitySeconds_Put.getValue().toString();
 
 		settingsGet.enabled.data = String.valueOf(checkBx_Enabled_Get.isSelected());
 		settingsGet.remoteDir.data = fld_RemoteFolder_Get.getText();
@@ -1792,6 +2041,8 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsGet.syncEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected());
 		settingsGet.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected());
 		settingsGet.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Get.isSelected() && checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected() && checkBx_SyncDeleteFolders_Get.isSelected());
+		settingsGet.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Get.isSelected());
+		settingsGet.stabilitySeconds.data = spinner_StabilitySeconds_Get.getValue().toString();
 
 		// update email config and distribution lists from panel data
 		// here.
@@ -1836,25 +2087,52 @@ public class JFrameSFTPTransfer extends JFrame
 		}
 	}
 
-	private void saveSettings()
+	// Saves the six settings files. Returns false, having logged which one, as soon as a save fails.
+	private boolean saveSettings()
 	{
 		writeToSystemLog("Saving connection settings to sftp_common.xml",JLogPanel.INFO);
-		settingsUtil.saveSFTPCommonToXml(settingsCommon);
+		if (settingsUtil.saveSFTPCommonToXml(settingsCommon) == false)
+		{
+			return saveFailed("sftp_common.xml");
+		}
 
 		writeToSystemLog("Saving PUT settings to sftp_put.xml",JLogPanel.INFO);
-		settingsUtil.saveSFTPPutToXml(settingsPut);
+		if (settingsUtil.saveSFTPPutToXml(settingsPut) == false)
+		{
+			return saveFailed("sftp_put.xml");
+		}
 
 		writeToSystemLog("Saving GET settings to sftp_get.xml",JLogPanel.INFO);
-		settingsUtil.saveSFTPGetToXml(settingsGet);
+		if (settingsUtil.saveSFTPGetToXml(settingsGet) == false)
+		{
+			return saveFailed("sftp_get.xml");
+		}
 
 		writeToSystemLog("Saving email properties to email_properties.xml",JLogPanel.INFO);
-		settingsUtil.saveEmailPropertiesToXml(emailConfig);
+		if (settingsUtil.saveEmailPropertiesToXml(emailConfig) == false)
+		{
+			return saveFailed("email_properties.xml");
+		}
 
 		writeToSystemLog("Saving email distribution lists to email_distribution_properties.xml",JLogPanel.INFO);
-		settingsUtil.saveEmailDistributionListToXml(distConfig);
+		if (settingsUtil.saveEmailDistributionListToXml(distConfig) == false)
+		{
+			return saveFailed("email_distribution_properties.xml");
+		}
 
 		writeToSystemLog("Saving Java jsch library properties to jsch_properties.xml",JLogPanel.INFO);
-		settingsUtil.saveJschPropertiesToXml(jschConfig);
+		if (settingsUtil.saveJschPropertiesToXml(jschConfig) == false)
+		{
+			return saveFailed("jsch_properties.xml");
+		}
+
+		return true;
+	}
+
+	private boolean saveFailed(String filename)
+	{
+		writeToSystemLog("Could not save " + filename + " - settings not applied.", JLogPanel.ERROR);
+		return false;
 	}
 
 	/**
@@ -1866,17 +2144,36 @@ public class JFrameSFTPTransfer extends JFrame
 	{
 		writeToSystemLog("Notifying threads of new configuration.",JLogPanel.INFO);
 
-		Start.emailthread.requestSettings(settingsUtil.copySettings(settingsCommon), new HashMap<String, EmailRecord>(emailConfig), new HashMap<String, DistributionRecord>(distConfig));
-		Start.archiveThread.requestSettings(settingsUtil.copySettings(settingsPut));
-		Start.transferPut.requestSettings(settingsUtil.copySettings(settingsPut), settingsUtil.copySettings(settingsCommon), new HashMap<String, JschRecord>(jschConfig));
-		Start.transferGet.requestSettings(settingsUtil.copySettings(settingsGet), settingsUtil.copySettings(settingsCommon), new HashMap<String, JschRecord>(jschConfig));
-
-		// The viewer is not a transfer thread - it changes straight away.
-		Start.applyWebSettings(Boolean.valueOf(settingsCommon.webEnabled.data), WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), settingsCommon.title.data);
+		// Copies, so that later edits on screen do not change the settings under the threads. The viewer changes straight away.
+		Start.handOverSettings(settingsUtil.copySettings(settingsCommon), settingsUtil.copySettings(settingsPut), settingsUtil.copySettings(settingsGet), new HashMap<String, EmailRecord>(emailConfig), new HashMap<String, DistributionRecord>(distConfig), new HashMap<String, JschRecord>(jschConfig));
 
 		displayMessage("Waiting for the current transfer to complete before applying the new settings.", messageType_WARN);
 
 		applyTimer.restart();
+	}
+
+	/**
+	 * The remote folder browse button: connects with the SFTP tab's settings
+	 * as they are on screen and opens the chooser. A connection which fails
+	 * used to leave the field as it was and say nothing but a log line.
+	 */
+	private void browseRemoteFolder(JTextField4j folderField)
+	{
+		collectSettings();
+
+		displayMessage("Connecting to " + settingsCommon.remoteHost.data + " ...", messageType_INFO);
+
+		String chosen = jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", folderField.getText());
+
+		if (chosen == null)
+		{
+			displayMessage("Could not connect to " + settingsCommon.remoteHost.data + " to browse its folders - see the System log for the reason.", messageType_ERROR);
+		}
+		else
+		{
+			folderField.setText(chosen);
+			displayMessage("", messageType_INFO);
+		}
 	}
 
 	/**
@@ -1896,7 +2193,7 @@ public class JFrameSFTPTransfer extends JFrame
 				createSafeFile(folderField.getText().trim(), remote);
 			}
 		});
-		btn_SafeFileCreate.setBounds(618, y, 30, 30);
+		btn_SafeFileCreate.setBounds(487, y, 30, 30);
 		panel.add(btn_SafeFileCreate);
 
 		JButton4j btn_SafeFileRemove = new JButton4j(Common.icon_cancel);
@@ -1908,7 +2205,7 @@ public class JFrameSFTPTransfer extends JFrame
 				removeSafeFile(folderField.getText().trim(), remote);
 			}
 		});
-		btn_SafeFileRemove.setBounds(648, y, 30, 30);
+		btn_SafeFileRemove.setBounds(517, y, 30, 30);
 		panel.add(btn_SafeFileRemove);
 	}
 
@@ -2135,6 +2432,10 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_WebEnabled_Common.setSelected(Boolean.valueOf(settingsCommon.webEnabled.data));
 		spinner_WebPort_Common.setValue(Integer.valueOf(WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT)));
 		spinner_WebPort_Common.setEnabled(checkBx_WebEnabled_Common.isSelected());
+		if (logLevelModel != null)
+		{
+			logLevelModel.setSelectedItem(JLogPanel.LEVEL_NAMES[JLogPanel.levelOf(settingsCommon.logLevel.data)]);
+		}
 		fld_Title_Common.setText(settingsCommon.title.data);
 		fld_HostAddress_Common.setText(settingsCommon.remoteHost.data);
 		fld_Port_Common.setText(settingsCommon.remotePort.data);
@@ -2165,6 +2466,9 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Put.setSelected(Boolean.valueOf(settingsPut.syncEnabled.data));
 		checkBx_SyncDelete_Put.setSelected(checkBx_Sync_Put.isSelected() && Boolean.valueOf(settingsPut.syncDeleteEnabled.data));
 		checkBx_SyncDeleteFolders_Put.setSelected(Boolean.valueOf(settingsPut.syncDeleteFoldersEnabled.data));
+		checkBx_Stability_Put.setSelected(Boolean.valueOf(settingsPut.stabilityCheckEnabled.data));
+		spinner_StabilitySeconds_Put.setValue(Integer.valueOf(stabilitySeconds(settingsPut.stabilitySeconds.data)));
+		spinner_StabilitySeconds_Put.setEnabled(checkBx_Stability_Put.isSelected());
 
 		checkBx_Enabled_Get.setSelected(Boolean.valueOf(settingsGet.enabled.data));
 		fld_LocalFolder_Get.setText(settingsGet.localDir.data);
@@ -2177,6 +2481,9 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Get.setSelected(Boolean.valueOf(settingsGet.syncEnabled.data));
 		checkBx_SyncDelete_Get.setSelected(checkBx_Sync_Get.isSelected() && Boolean.valueOf(settingsGet.syncDeleteEnabled.data));
 		checkBx_SyncDeleteFolders_Get.setSelected(Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
+		checkBx_Stability_Get.setSelected(Boolean.valueOf(settingsGet.stabilityCheckEnabled.data));
+		spinner_StabilitySeconds_Get.setValue(Integer.valueOf(stabilitySeconds(settingsGet.stabilitySeconds.data)));
+		spinner_StabilitySeconds_Get.setEnabled(checkBx_Stability_Get.isSelected());
 
 		panel_Properties_Scrollable.removeAll();
 
@@ -2394,66 +2701,62 @@ public class JFrameSFTPTransfer extends JFrame
 		return (savedFingerprint != null) && (savedFingerprint.equals(currentFingerprint()) == false);
 	}
 
-	private boolean appliedSettingsSaved()
-	{
-		return (appliedFingerprint == null) || appliedFingerprint.equals(savedFingerprint);
-	}
-
 	private void refreshSettingsButtons()
 	{
-		if ((btn_Apply == null) || (btn_Save == null) || (btn_Reload == null) || (savedFingerprint == null))
+		if ((btn_Apply == null) || (btn_Reload == null) || (savedFingerprint == null))
 		{
 			return;
 		}
 
-		String current = currentFingerprint();
+		boolean changed = hasUnsavedChanges();
 
-		btn_Apply.setEnabled(current.equals(appliedFingerprint) == false);
-		btn_Save.setEnabled(current.equals(savedFingerprint) == false);
-		btn_Reload.setEnabled(current.equals(savedFingerprint) == false);
+		btn_Apply.setEnabled(changed);
+		btn_Reload.setEnabled(changed);
 	}
 
+	/**
+	 * Apply: saves the six settings files, hands the settings to this program's
+	 * threads, then leaves a reload request for a service running on this
+	 * machine. The request is written last, and only when every save
+	 * succeeded, so a request always means whole files. A failed save stops
+	 * everything - the files on disk are not trusted and the threads keep what
+	 * they have.
+	 */
 	private void applyChanges()
 	{
 		commitSpinnerEdits();
 		collectSettings();
 
-		writeToSystemLog("Applying settings without saving.", JLogPanel.INFO);
-
-		appliedFingerprint = currentFingerprint();
-
-		applySettings();
-
-		refreshSettingsButtons();
-	}
-
-	private void saveChanges()
-	{
-		commitSpinnerEdits();
-		collectSettings();
-
-		saveSettings();
+		if (saveSettings() == false)
+		{
+			displayMessage("Settings NOT applied - a settings file could not be saved, see the System log.", messageType_ERROR);
+			return;
+		}
 
 		savedFingerprint = currentFingerprint();
 
 		refreshSettingsButtons();
 
-		if (savedFingerprint.equals(appliedFingerprint))
+		applySettings();
+
+		if (ReloadRequest.request())
 		{
-			displayMessage("Settings saved.", messageType_INFO);
+			reloadRequestedAt = Instant.now();
+
+			writeToSystemLog("Reload request written for any service running on this machine : " + ReloadRequest.FILENAME, JLogPanel.INFO);
 		}
 		else
 		{
-			writeToSystemLog("Saved settings have not been applied.", JLogPanel.INFO);
+			reloadRequestedAt = null;
 
-			displayMessage("Settings saved but not applied - they take effect on Apply or at the next restart.", messageType_WARN);
+			writeToSystemLog("Reload request could not be written : " + ReloadRequest.getFile().getPath() + " - a service on this machine will not pick up the new settings until restarted.", JLogPanel.WARN);
 		}
 	}
 
-	// Re-reads the saved files into the form, discarding unsaved edits. What the threads are running is untouched.
+	// Re-reads the saved files into the form, discarding edits not yet applied. What the threads are running is untouched.
 	private void reloadSettings()
 	{
-		writeToSystemLog("Reloading saved settings - unsaved changes discarded.", JLogPanel.INFO);
+		writeToSystemLog("Reloading saved settings - changes not yet applied discarded.", JLogPanel.INFO);
 
 		settingsCommon = settingsUtil.readSFTPCommonFromXml();
 		settingsPut = settingsUtil.readSFTPPutFromXml();
@@ -2469,14 +2772,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		refreshSettingsButtons();
 
-		if (savedFingerprint.equals(appliedFingerprint))
-		{
-			displayMessage("Saved settings reloaded.", messageType_INFO);
-		}
-		else
-		{
-			displayMessage("Saved settings reloaded - they differ from the settings currently applied.", messageType_WARN);
-		}
+		displayMessage("Saved settings reloaded.", messageType_INFO);
 	}
 
 	private void openHelp()

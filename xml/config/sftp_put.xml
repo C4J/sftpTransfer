@@ -5,7 +5,7 @@
         <guid encrypted="false">95f3c477-75d2-4f3f-a735-fd9d1d7cf690</guid>
         <title encrypted="false"/>
         <localDir encrypted="false">./send</localDir>
-        <localFileMask encrypted="false">*.xml</localFileMask>
+        <localFileMask encrypted="false">*.xml;*.csv</localFileMask>
         <includeSubFolders encrypted="false">true</includeSubFolders>
         <syncEnabled encrypted="false">true</syncEnabled>
         <syncDeleteEnabled encrypted="false">true</syncDeleteEnabled>

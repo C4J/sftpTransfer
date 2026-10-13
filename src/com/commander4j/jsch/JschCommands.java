@@ -4,9 +4,11 @@ import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Properties;
 import java.util.Vector;
 
+import org.apache.commons.io.IOCase;
 import org.apache.logging.log4j.Logger;
 
 import com.commander4j.gui.frame.JFrameSFTPTransfer;
@@ -15,6 +17,7 @@ import com.commander4j.log.JLogPanel;
 
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.sftp.Start;
+import com.commander4j.util.JFileMask;
 import com.commander4j.web.LogHub;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.ChannelSftp.LsEntry;
@@ -51,23 +54,26 @@ public class JschCommands
 	// session found closed while this is set was dropped by the server or the network.
 	private boolean sessionOpen = false;
 
+	/**
+	 * Opens the remote folder chooser. Returns the folder chosen (the default
+	 * if the dialog was cancelled), or null when the server could not be
+	 * connected to - the reason is on the log, and the caller should say so
+	 * on the status line, since nothing else shows.
+	 */
 	public String viewTree(SettingsCommon sc, JFrameSFTPTransfer frame, String rootNode, String defaultNode)
 	{
-		String chosen = defaultNode;
-
 		// A session left open by an earlier look-up would still be showing the old host.
 		resetConnection();
 
 		assignCommonSettings(sc);
 		connect();
 
-		if (isConnected())
+		if (isConnected() == false)
 		{
+			return null;
+		}
 
-			chosen = RemoteFolderChooser.chooseRemoteFolder(frame, channel, rootNode, defaultNode);
-		};
-
-		return chosen;
+		return RemoteFolderChooser.chooseRemoteFolder(frame, channel, rootNode, defaultNode);
 	}
 
 	public JschCommands(int logType)
@@ -104,8 +110,9 @@ public class JschCommands
 	/**
 	 * Every message also goes to the log file, whether or not there is a
 	 * window, tagged with the window it belongs to and at a matching level.
-	 * Directory listing entries are kept at debug. The same line is kept in
-	 * memory for the web log viewer.
+	 * Directory listing entries are kept at debug; polling detail (DEBUG rows)
+	 * at trace, so the file is as quiet as the Normal view unless log4j2.xml
+	 * asks for trace. The same line is kept in memory for the web log viewer.
 	 */
 	private void writeToFile(int destination, String data, int logmode)
 	{
@@ -123,6 +130,9 @@ public class JschCommands
 			break;
 		case JLogPanel.DIRECTORY:
 			logger.debug(line);
+			break;
+		case JLogPanel.DEBUG:
+			logger.trace(line);
 			break;
 		default:
 			logger.info(line);
@@ -632,8 +642,9 @@ public class JschCommands
 	}
 
 	/**
-	 * The command is always logged; the entries it returns only when
-	 * logListing is set, since a sync lists the same files on every poll.
+	 * A listing is a poll, so the command is a DEBUG row (shown only at the
+	 * Debug display level); a failure is an error. The entries it returns are
+	 * logged when logListing is set.
 	 */
 	public Vector<ChannelSftp.LsEntry> ls(String path, String mask, boolean logListing)
 	{
@@ -643,7 +654,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("ls " + path + "/" + mask, JLogPanel.NORMAL);
+				writeToLog("ls " + path + "/" + mask, JLogPanel.DEBUG);
 
 				filelist = channel.ls(path + "/" + mask);
 
@@ -667,8 +678,54 @@ public class JschCommands
 	}
 
 	/**
+	 * The entries in a remote folder whose names match any of the masks. The
+	 * folder is read once and the masks are applied here - SFTP has no
+	 * server-side wildcard, and a file matching two masks is listed once.
+	 * Matching is case sensitive, as the server's own listing is. A listing
+	 * is a poll, so the command is a DEBUG row (shown only at the Debug
+	 * display level) and the entries are not logged here at all - the caller
+	 * logs the ones it goes on to process. A failure is an error.
+	 */
+	public Vector<ChannelSftp.LsEntry> ls(String path, List<String> masks)
+	{
+		Vector<ChannelSftp.LsEntry> filelist = new Vector<LsEntry>();
+
+		if (isConnected())
+		{
+			String command = "ls " + path + "/" + JFileMask.describe(masks);
+
+			try
+			{
+				writeToLog(command, JLogPanel.DEBUG);
+
+				for (ChannelSftp.LsEntry entry : channel.ls(path))
+				{
+					String name = entry.getFilename();
+
+					if (name.equals(".") || name.equals(".."))
+					{
+						continue;
+					}
+
+					if (JFileMask.matches(name, masks, IOCase.SENSITIVE))
+					{
+						filelist.add(entry);
+					}
+				}
+			}
+			catch (SftpException e)
+			{
+				writeToLog(command + " failed - " + e.getMessage(), JLogPanel.ERROR);
+			}
+		}
+
+		return filelist;
+	}
+
+	/**
 	 * Names of the folders directly beneath a remote folder. Symbolic links
-	 * are not followed.
+	 * are not followed. A listing is a poll, so the command is a DEBUG row;
+	 * a failure is an error.
 	 */
 	public Vector<String> lsFolders(String path)
 	{
@@ -678,7 +735,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("ls " + path, JLogPanel.NORMAL);
+				writeToLog("ls " + path, JLogPanel.DEBUG);
 
 				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
 
@@ -706,7 +763,8 @@ public class JschCommands
 	/**
 	 * Attributes (size, modified time) of the files in a remote folder, keyed
 	 * by filename. Returns null if the folder cannot be listed, typically
-	 * because it does not exist.
+	 * because it does not exist. A listing is a poll, so the command is a
+	 * DEBUG row; a missing folder is expected during a sync and is not logged.
 	 */
 	public HashMap<String, SftpATTRS> lsFiles(String path)
 	{
@@ -716,7 +774,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("ls " + path, JLogPanel.NORMAL);
+				writeToLog("ls " + path, JLogPanel.DEBUG);
 
 				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
 
@@ -740,9 +798,148 @@ public class JschCommands
 	}
 
 	/**
+	 * One read of a remote folder and the views the transfer threads take of
+	 * it: the files with their attributes, everything with its attributes, the
+	 * sub folder names, and the entries matching a set of file masks. A pass
+	 * reads a folder once and takes every view from that read instead of
+	 * listing the folder again for each - the safe file check, the sync
+	 * comparison and the sub folder walk used to be separate listings of the
+	 * same folder a few milliseconds apart. A listing belongs to the pass that
+	 * took it and is never kept for the next poll. "." and ".." are left out.
+	 */
+	public static final class RemoteListing
+	{
+		private final Vector<LsEntry> entries = new Vector<LsEntry>();
+
+		RemoteListing(Vector<LsEntry> raw)
+		{
+			for (LsEntry entry : raw)
+			{
+				String name = entry.getFilename();
+
+				if ((name.equals(".") == false) && (name.equals("..") == false))
+				{
+					entries.add(entry);
+				}
+			}
+		}
+
+		/** Attributes of the files (not folders), keyed by filename - the lsFiles view. */
+		public HashMap<String, SftpATTRS> files()
+		{
+			HashMap<String, SftpATTRS> result = new HashMap<String, SftpATTRS>();
+
+			for (LsEntry entry : entries)
+			{
+				if (entry.getAttrs().isDir() == false)
+				{
+					result.put(entry.getFilename(), entry.getAttrs());
+				}
+			}
+
+			return result;
+		}
+
+		/** Attributes of everything, keyed by name - the lsEntries view. */
+		public HashMap<String, SftpATTRS> entries()
+		{
+			HashMap<String, SftpATTRS> result = new HashMap<String, SftpATTRS>();
+
+			for (LsEntry entry : entries)
+			{
+				result.put(entry.getFilename(), entry.getAttrs());
+			}
+
+			return result;
+		}
+
+		/** Names of the sub folders, sorted - the lsFolders view. Symbolic links are not followed. */
+		public Vector<String> folders()
+		{
+			Vector<String> result = new Vector<String>();
+
+			for (LsEntry entry : entries)
+			{
+				if (entry.getAttrs().isDir())
+				{
+					result.add(entry.getFilename());
+				}
+			}
+
+			Collections.sort(result);
+
+			return result;
+		}
+
+		/** The entries whose names match any of the masks, in the server's order - the ls(path, masks) view, same case rule. */
+		public Vector<LsEntry> matching(List<String> masks)
+		{
+			Vector<LsEntry> result = new Vector<LsEntry>();
+
+			for (LsEntry entry : entries)
+			{
+				if (JFileMask.matches(entry.getFilename(), masks, IOCase.SENSITIVE))
+				{
+					result.add(entry);
+				}
+			}
+
+			return result;
+		}
+
+		/** Whether a file (not a folder) of that name is in the listing. */
+		public boolean hasFile(String name)
+		{
+			for (LsEntry entry : entries)
+			{
+				if (entry.getFilename().equals(name) && (entry.getAttrs().isDir() == false))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+	}
+
+	/**
+	 * Reads a remote folder once. Returns null if it cannot be listed, so a
+	 * failed listing is never mistaken for an empty folder; the failure is
+	 * logged as an error when logFailure is set (a folder missing during a
+	 * sync is expected and is not). A listing is a poll, so the command is a
+	 * DEBUG row.
+	 */
+	public RemoteListing listFolder(String path, boolean logFailure)
+	{
+		RemoteListing result = null;
+
+		if (isConnected())
+		{
+			try
+			{
+				writeToLog("ls " + path, JLogPanel.DEBUG);
+
+				result = new RemoteListing(channel.ls(path));
+			}
+			catch (SftpException e)
+			{
+				if (logFailure)
+				{
+					writeToLog("ls " + path + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				}
+
+				result = null;
+			}
+		}
+
+		return result;
+	}
+
+	/**
 	 * Attributes of everything in a remote folder (files and folders), keyed
 	 * by name. Returns null if the folder cannot be listed, so a failed
-	 * listing is never mistaken for an empty folder.
+	 * listing is never mistaken for an empty folder. A listing is a poll, so
+	 * the command is a DEBUG row; a missing folder is not logged.
 	 */
 	public HashMap<String, SftpATTRS> lsEntries(String path)
 	{
@@ -752,7 +949,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("ls " + path, JLogPanel.NORMAL);
+				writeToLog("ls " + path, JLogPanel.DEBUG);
 
 				Vector<ChannelSftp.LsEntry> filelist = channel.ls(path);
 

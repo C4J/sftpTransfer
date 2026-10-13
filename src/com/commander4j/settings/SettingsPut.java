@@ -16,6 +16,9 @@ public class SettingsPut
 	public SettingData syncEnabled =new SettingData("false","false");
 	public SettingData syncDeleteEnabled =new SettingData("false","false");
 	public SettingData syncDeleteFoldersEnabled =new SettingData("false","false");
+	// Wait, then re-check size and time, before sending a file - a file still being written is left for the next poll.
+	public SettingData stabilityCheckEnabled =new SettingData("false","false");
+	public SettingData stabilitySeconds =new SettingData("5","false");
 	
 	public SettingData backupEnabled =new SettingData("","false");
 	public SettingData backupDir =new SettingData("","false");

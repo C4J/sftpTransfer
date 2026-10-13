@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.Vector;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.io.IOCase;
 
 import com.commander4j.jsch.JschCommands;
@@ -22,6 +21,8 @@ import com.commander4j.log.JLogPanel;
 import com.commander4j.settings.SettingUtil;
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.settings.SettingsGet;
+import com.commander4j.util.JFileMask;
+import com.commander4j.util.JFormat;
 import com.commander4j.util.JSafeFile;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.Session;
@@ -84,6 +85,11 @@ public class TransferGET extends Thread
 	// Each missing safe file is reported once, not on every poll.
 	private boolean localSafeFileMissing = false;
 	private boolean remoteSafeFileMissing = false;
+
+	// Counts for the pass summary.
+	private int receivedCount = 0;
+	private int failedCount = 0;
+	private int skippedCount = 0;
 
 	public TransferGET(int destination)
 	{
@@ -271,15 +277,27 @@ public class TransferGET extends Thread
 				jcmd.connect();
 			}
 
-			if (jcmd.isConnected() && isRemoteSafeFilePresent())
+			// The listing which proved the safe file is the remote folder as it is now; the top folder is processed from it.
+			JschCommands.RemoteListing topListing = jcmd.isConnected() ? remoteSafeFileListing() : null;
+
+			if (jcmd.isConnected() && (topListing != null))
 			{
 				boolean includeSubFolders = Boolean.valueOf(settingsGet.includeSubFolders.data);
 				boolean sync = Boolean.valueOf(settingsGet.syncEnabled.data);
 
 				syncDeletions.clear();
 				syncFolderDeletions.clear();
+				receivedCount = 0;
+				failedCount = 0;
+				skippedCount = 0;
+				Instant passStarted = Instant.now();
 
-				receiveFolder(settingsGet.remoteDir.data, new File(settingsGet.localDir.data), includeSubFolders, sync);
+				receiveFolder(settingsGet.remoteDir.data, new File(settingsGet.localDir.data), includeSubFolders, sync, topListing);
+
+				if ((receivedCount + failedCount + skippedCount) > 0)
+				{
+					jcmd.writeToLog("Transfer finished - " + receivedCount + " received, " + failedCount + " failed, " + skippedCount + " skipped in " + JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis()), JLogPanel.INFO);
+				}
 
 				if (jcmd.isConnected() == false)
 				{
@@ -350,12 +368,20 @@ public class TransferGET extends Thread
 	 * The safe file is the proof that the remote folder is the right one and
 	 * is really there - a wrong path can look like an empty folder.
 	 */
-	private boolean isRemoteSafeFilePresent()
+	/**
+	 * Returns the listing of the remote folder when the safe file is in it,
+	 * null when it is not (or the folder could not be listed). The pass
+	 * processes the top folder from this same listing instead of listing it
+	 * again - it is returned, not kept, so it lives for one pass.
+	 */
+	private JschCommands.RemoteListing remoteSafeFileListing()
 	{
 		String safeFile = remotePath(settingsGet.remoteDir.data, JSafeFile.remote);
 
 		// The remote folder is listed because a server may answer a question about one file from a cache.
-		boolean present = jcmd.isRemoteFileListed(settingsGet.remoteDir.data, JSafeFile.remote);
+		JschCommands.RemoteListing listing = jcmd.listFolder(settingsGet.remoteDir.data, false);
+
+		boolean present = (listing != null) && listing.hasFile(JSafeFile.remote);
 
 		if (present)
 		{
@@ -374,17 +400,41 @@ public class TransferGET extends Thread
 
 		remoteSafeFileMissing = (present == false);
 
-		return present;
+		return present ? listing : null;
 	}
 
-	private void receiveFolder(String remoteFolder, File localFolder, boolean includeSubFolders, boolean sync)
+	/**
+	 * Processes one remote folder from one listing of it: the files matching
+	 * the mask, the sync deletions and the sub folders all come from the same
+	 * read. The top folder arrives with the listing taken for the safe file
+	 * check; a sub folder is listed here. A folder which cannot be listed is
+	 * reported and left alone - nothing fetched, nothing deleted, no descent.
+	 */
+	private void receiveFolder(String remoteFolder, File localFolder, boolean includeSubFolders, boolean sync, JschCommands.RemoteListing listing)
 	{
-		// A sync looks at the same files on every poll, so the listing is only logged for a move.
-		Vector<ChannelSftp.LsEntry> fileNames = jcmd.ls(remoteFolder, settingsGet.remoteFileMask.data, sync == false);
+		// The listing is a poll - a DEBUG row only - so at the Normal level nothing shows until a file to fetch is found.
+		if (listing == null)
+		{
+			listing = jcmd.listFolder(remoteFolder, true);
+
+			if (listing == null)
+			{
+				return;
+			}
+		}
+
+		// One or more masks separated by ';' - a file matching any of them is fetched.
+		Vector<ChannelSftp.LsEntry> fileNames = listing.matching(JFileMask.split(settingsGet.remoteFileMask.data));
+
+		// Stability check: the listing above is the "before" picture of this folder; the folder is listed
+		// again - a genuine fresh read, never the listing in hand - after the wait, just before the first
+		// file is fetched from it.
+		Instant listedAt = Instant.now();
+		HashMap<String, SftpATTRS> freshEntries = null;
 
 		if (sync && Boolean.valueOf(settingsGet.syncDeleteEnabled.data))
 		{
-			collectSyncDeletions(remoteFolder, localFolder, includeSubFolders && Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
+			collectSyncDeletions(listing.entries(), localFolder, includeSubFolders && Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
 		}
 
 		for (ChannelSftp.LsEntry entry : fileNames)
@@ -401,9 +451,9 @@ public class TransferGET extends Thread
 				continue;
 			}
 
-			if (JSafeFile.isSafeFile(entry.getFilename()))
+			if (JSafeFile.isSafeFile(entry.getFilename()) || isTempFile(entry.getFilename()))
 			{
-				// The safe files are never fetched, whatever the file mask.
+				// The safe files are never fetched, whatever the file mask, and nor is a file still being written under the temporary extension.
 				continue;
 			}
 
@@ -416,17 +466,52 @@ public class TransferGET extends Thread
 				continue;
 			}
 
-			if (sync)
+			if (sync && isLocalCopyCurrent(localFile, entry.getAttrs()))
 			{
-				if (isLocalCopyCurrent(localFile, entry.getAttrs()))
+				continue;
+			}
+
+			if (Boolean.valueOf(settingsGet.stabilityCheckEnabled.data))
+			{
+				if (freshEntries == null)
 				{
-					continue;
+					if (awaitStability(listedAt) == false)
+					{
+						return;
+					}
+
+					freshEntries = jcmd.lsEntries(remoteFolder);
+
+					if (freshEntries == null)
+					{
+						jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
+						return;
+					}
 				}
 
-				jcmd.writeToLog("Sync = " + remoteFile, JLogPanel.INFO);
+				if (isStable(entry, freshEntries.get(entry.getFilename()), remoteFile) == false)
+				{
+					skippedCount++;
+					continue;
+				}
+			}
+
+			long size = entry.getAttrs().getSize();
+
+			if (sync)
+			{
+				jcmd.writeToLog("Sync receiving " + remoteFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
+			}
+			else
+			{
+				// A move shows the listing entry of each file it is about to fetch - the safe and temporary files above are never shown.
+				jcmd.writeToLog(entry.toString(), JLogPanel.DIRECTORY);
+				jcmd.writeToLog("Receiving " + remoteFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
 			}
 
 			ensureLocalFolder(localFolder);
+
+			Instant fileStarted = Instant.now();
 
 			if (receiveFile(remoteFile, localFile))
 			{
@@ -439,16 +524,20 @@ public class TransferGET extends Thread
 				{
 					jcmd.rm(remoteFile);
 				}
+
+				receivedCount++;
+				jcmd.writeToLog("Received " + localFile.getPath() + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
 			}
 			else
 			{
+				failedCount++;
 				jcmd.writeToLog("Download failed, remote file retained " + remoteFile, JLogPanel.ERROR);
 			}
 		}
 
 		if (includeSubFolders)
 		{
-			for (String folderName : jcmd.lsFolders(remoteFolder))
+			for (String folderName : listing.folders())
 			{
 				if (getRunMode() == Mode_SHUTDOWN)
 				{
@@ -465,9 +554,80 @@ public class TransferGET extends Thread
 						ensureLocalFolder(localSubFolder);
 					}
 
-					receiveFolder(remotePath(remoteFolder, folderName), localSubFolder, includeSubFolders, sync);
+					receiveFolder(remotePath(remoteFolder, folderName), localSubFolder, includeSubFolders, sync, null);
 				}
 			}
+		}
+	}
+
+	/**
+	 * Stability check, part one: waits until the folder listing is the
+	 * configured number of seconds old. Done once per folder, just before the
+	 * first file is fetched from it, so a folder with nothing to fetch never
+	 * waits. Returns false if a shutdown arrived during the wait.
+	 */
+	private boolean awaitStability(Instant listedAt)
+	{
+		long waitMillis = stabilitySeconds() * 1000L - Duration.between(listedAt, Instant.now()).toMillis();
+
+		if (waitMillis > 0)
+		{
+			jcmd.writeToLog("Stability check - waiting " + JFormat.seconds(waitMillis) + " before the first transfer", JLogPanel.INFO);
+
+			Instant until = Instant.now().plusMillis(waitMillis);
+
+			while (Instant.now().isBefore(until))
+			{
+				if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
+				{
+					return false;
+				}
+
+				try
+				{
+					Thread.sleep(100);
+				}
+				catch (InterruptedException e)
+				{
+					return false;
+				}
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Stability check, part two: a file whose size or modified time differs
+	 * between the two listings (or which has gone) is still being written, so
+	 * it is left for the next poll - nothing is fetched or removed.
+	 */
+	private boolean isStable(ChannelSftp.LsEntry before, SftpATTRS after, String remoteFile)
+	{
+		if ((after == null) || after.isDir())
+		{
+			jcmd.writeToLog("Skipped, no longer there : " + remoteFile, JLogPanel.WARN);
+			return false;
+		}
+
+		if ((before.getAttrs().getSize() != after.getSize()) || (before.getAttrs().getMTime() != after.getMTime()))
+		{
+			jcmd.writeToLog("Skipped, still changing : " + remoteFile + " (" + JFormat.bytes(before.getAttrs().getSize()) + " -> " + JFormat.bytes(after.getSize()) + ") - retried on the next poll", JLogPanel.WARN);
+			return false;
+		}
+
+		return true;
+	}
+
+	private int stabilitySeconds()
+	{
+		try
+		{
+			return Math.max(1, Integer.parseInt(settingsGet.stabilitySeconds.data.trim()));
+		}
+		catch (Exception e)
+		{
+			return 5;
 		}
 	}
 
@@ -478,9 +638,8 @@ public class TransferGET extends Thread
 	 * mask and must not be a part-finished download. Nothing is noted if the
 	 * remote folder cannot be listed.
 	 */
-	private void collectSyncDeletions(String remoteFolder, File localFolder, boolean syncDeleteFolders)
+	private void collectSyncDeletions(HashMap<String, SftpATTRS> remoteEntries, File localFolder, boolean syncDeleteFolders)
 	{
-		HashMap<String, SftpATTRS> remoteEntries = jcmd.lsEntries(remoteFolder);
 		File[] localFiles = localFolder.listFiles();
 
 		if ((remoteEntries != null) && (localFiles != null))
@@ -530,14 +689,23 @@ public class TransferGET extends Thread
 			return false;
 		}
 
-		String tempFileExtension = settingsGet.tempFileExtension.data;
-
-		if ((tempFileExtension.equals("") == false) && filename.endsWith(tempFileExtension))
+		if (isTempFile(filename))
 		{
 			return false;
 		}
 
-		return FilenameUtils.wildcardMatch(filename, settingsGet.remoteFileMask.data, IOCase.SENSITIVE);
+		return JFileMask.matches(filename, settingsGet.remoteFileMask.data, IOCase.SENSITIVE);
+	}
+
+	/**
+	 * A file carrying the temporary extension is one somebody is still
+	 * writing, so it is left alone whatever the file mask says.
+	 */
+	private boolean isTempFile(String filename)
+	{
+		String tempFileExtension = settingsGet.tempFileExtension.data;
+
+		return (tempFileExtension.equals("") == false) && filename.endsWith(tempFileExtension);
 	}
 
 	/**

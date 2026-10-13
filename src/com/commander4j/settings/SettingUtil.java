@@ -35,6 +35,41 @@ public class SettingUtil
 
 	private JUtility util = new JUtility();
 
+	// Whether the last readSFTPCommonFromXml() got through the whole file. The reader returns
+	// what it has when it fails, so anything which rewrites the file from a re-read must check this.
+	private boolean lastCommonReadOk = false;
+
+	// The six files a reload reads, in the order the desktop saves them.
+	public static final String[] CONFIG_FILES = { "sftp_common.xml", "sftp_put.xml", "sftp_get.xml", "email_properties.xml", "email_distribution_properties.xml", "jsch_properties.xml" };
+
+	/**
+	 * Parses each of the six settings files without reading any settings from
+	 * them. The readers return defaults when a file is missing or damaged,
+	 * which is fine at start-up but not for a reload into running threads -
+	 * so a reload checks here first. Returns null when all six parse, else
+	 * the name of the first file which does not.
+	 */
+	public String checkConfigFiles()
+	{
+		for (String name : CONFIG_FILES)
+		{
+			File xmlFile = new File("./xml/config", name);
+
+			try
+			{
+				DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder builder = factory.newDocumentBuilder();
+				builder.parse(xmlFile);
+			}
+			catch (Exception e)
+			{
+				return name;
+			}
+		}
+
+		return null;
+	}
+
 	/**
 	 * An independent copy of a SettingsCommon, SettingsPut or SettingsGet, so
 	 * that the settings a thread is working with are not changed under it by
@@ -69,6 +104,8 @@ public class SettingUtil
 	public SettingsCommon readSFTPCommonFromXml()
 	{
 		SettingsCommon result = new SettingsCommon();
+
+		lastCommonReadOk = false;
 
 		try
 		{
@@ -120,6 +157,10 @@ public class SettingUtil
 						case "webPort":
 							result.webPort.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.webPort.encrypted = encrypted;
+							break;
+						case "logLevel":
+							result.logLevel.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.logLevel.encrypted = encrypted;
 							break;
 						case "remoteHost":
 							result.remoteHost.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
@@ -192,6 +233,8 @@ public class SettingUtil
 					}
 				}
 			}
+
+			lastCommonReadOk = true;
 		}
 		catch (Exception e)
 		{
@@ -281,6 +324,16 @@ public class SettingUtil
 						case "syncDeleteFoldersEnabled":
 							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.syncDeleteFoldersEnabled.encrypted = encrypted;
+							break;
+						case "stabilityCheckEnabled":
+							result.stabilityCheckEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.stabilityCheckEnabled.encrypted = encrypted;
+							break;
+						case "stabilitySeconds":
+							result.stabilitySeconds.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.stabilitySeconds.encrypted = encrypted;
+							// The screen parses this at start-up, so a blank element must not reach it.
+							if (result.stabilitySeconds.data.equals("")) result.stabilitySeconds.data = "5";
 							break;
 						case "backupEnabled":
 							result.backupEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
@@ -420,6 +473,16 @@ public class SettingUtil
 							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.syncDeleteFoldersEnabled.encrypted = encrypted;
 							break;
+						case "stabilityCheckEnabled":
+							result.stabilityCheckEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.stabilityCheckEnabled.encrypted = encrypted;
+							break;
+						case "stabilitySeconds":
+							result.stabilitySeconds.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.stabilitySeconds.encrypted = encrypted;
+							// The screen parses this at start-up, so a blank element must not reach it.
+							if (result.stabilitySeconds.data.equals("")) result.stabilitySeconds.data = "5";
+							break;
 						case "pollFrequencySeconds":
 							result.pollFrequencySeconds.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.pollFrequencySeconds.encrypted = encrypted;
@@ -489,6 +552,11 @@ public class SettingUtil
 			webPort.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.webPort.data, settings.webPort.encrypted)));
 			webPort.setAttribute("encrypted", settings.webPort.encrypted);
 			settingsElement.appendChild(webPort);
+
+			Element logLevel = (Element) doc.createElement("logLevel");
+			logLevel.appendChild(doc.createTextNode(settings.logLevel.data));
+			logLevel.setAttribute("encrypted", "false");
+			settingsElement.appendChild(logLevel);
 
 			Element remoteHost = (Element) doc.createElement("remoteHost");
 			remoteHost.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.remoteHost.data, settings.remoteHost.encrypted)));
@@ -589,6 +657,34 @@ public class SettingUtil
 
 	}
 
+	/**
+	 * Writes only the log display level to sftp_common.xml. The file is re-read
+	 * first so that nothing else on screen - settings applied but not saved, or
+	 * edited but not applied - is written with it. Nothing is written when the
+	 * file already holds that level, so a repeat choice leaves the file's
+	 * timestamp alone. Nothing is written either when the file could not be
+	 * read in full - the rewrite would otherwise replace the connection
+	 * settings and passwords with the blanks of a half-read object.
+	 */
+	public boolean saveSFTPCommonLogLevel(String level)
+	{
+		SettingsCommon saved = readSFTPCommonFromXml();
+
+		if (lastCommonReadOk == false)
+		{
+			return false;
+		}
+
+		if (saved.logLevel.data.equals(level))
+		{
+			return true;
+		}
+
+		saved.logLevel.data = level;
+
+		return saveSFTPCommonToXml(saved);
+	}
+
 	public boolean saveSFTPPutToXml(SettingsPut settings)
 	{
 
@@ -658,6 +754,16 @@ public class SettingUtil
 			syncDeleteFoldersEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteFoldersEnabled.data, settings.syncDeleteFoldersEnabled.encrypted)));
 			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
 			settingsElement.appendChild(syncDeleteFoldersEnabled);
+
+			Element stabilityCheckEnabled = (Element) doc.createElement("stabilityCheckEnabled");
+			stabilityCheckEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityCheckEnabled.data, settings.stabilityCheckEnabled.encrypted)));
+			stabilityCheckEnabled.setAttribute("encrypted", settings.stabilityCheckEnabled.encrypted);
+			settingsElement.appendChild(stabilityCheckEnabled);
+
+			Element stabilitySeconds = (Element) doc.createElement("stabilitySeconds");
+			stabilitySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilitySeconds.data, settings.stabilitySeconds.encrypted)));
+			stabilitySeconds.setAttribute("encrypted", settings.stabilitySeconds.encrypted);
+			settingsElement.appendChild(stabilitySeconds);
 
 			Element backupEnabled = (Element) doc.createElement("backupEnabled");
 			backupEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.backupEnabled.data, settings.backupEnabled.encrypted)));
@@ -782,6 +888,16 @@ public class SettingUtil
 			syncDeleteFoldersEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteFoldersEnabled.data, settings.syncDeleteFoldersEnabled.encrypted)));
 			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
 			settingsElement.appendChild(syncDeleteFoldersEnabled);
+
+			Element stabilityCheckEnabled = (Element) doc.createElement("stabilityCheckEnabled");
+			stabilityCheckEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityCheckEnabled.data, settings.stabilityCheckEnabled.encrypted)));
+			stabilityCheckEnabled.setAttribute("encrypted", settings.stabilityCheckEnabled.encrypted);
+			settingsElement.appendChild(stabilityCheckEnabled);
+
+			Element stabilitySeconds = (Element) doc.createElement("stabilitySeconds");
+			stabilitySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilitySeconds.data, settings.stabilitySeconds.encrypted)));
+			stabilitySeconds.setAttribute("encrypted", settings.stabilitySeconds.encrypted);
+			settingsElement.appendChild(stabilitySeconds);
 
 			Element pollFrequencySeconds = (Element) doc.createElement("pollFrequencySeconds");
 			pollFrequencySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.pollFrequencySeconds.data, settings.pollFrequencySeconds.encrypted)));

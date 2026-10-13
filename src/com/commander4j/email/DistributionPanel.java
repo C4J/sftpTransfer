@@ -26,7 +26,7 @@ public class DistributionPanel extends JPanel
 
 	public static int rowheight = 23;
 	public static int idwidth = 70;
-	public static int addresswidth = 355;
+	public static int addresswidth = 320;
 	public static int maxfrequencywidth = 80;
 	public static int enabledwidth = 27;
 	private JLabel seperator = new JLabel("  ");
