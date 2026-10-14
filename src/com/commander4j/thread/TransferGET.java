@@ -15,6 +15,7 @@ import java.util.Vector;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOCase;
 
+import com.commander4j.email.Notify;
 import com.commander4j.jsch.JschCommands;
 import com.commander4j.jsch.JschRecord;
 import com.commander4j.log.JLogPanel;
@@ -77,14 +78,15 @@ public class TransferGET extends Thread
 
 	int logDestination = 0;
 
-	// Local files with no remote counterpart, removed at the end of a completed sync.
-	private ArrayList<File> syncDeletions = new ArrayList<File>();
-	// Local folders with no remote counterpart, cleared out at the end of a completed sync.
-	private ArrayList<File> syncFolderDeletions = new ArrayList<File>();
+	// The remote folder whose heading has been written this pass - see announceFolder().
+	private String announcedFolder = null;
 
 	// Each missing safe file is reported once, not on every poll.
 	private boolean localSafeFileMissing = false;
 	private boolean remoteSafeFileMissing = false;
+
+	// Why the last local step of a download failed (rename of the temporary file), for the email.
+	private String lastLocalError = "";
 
 	// Counts for the pass summary.
 	private int receivedCount = 0;
@@ -285,8 +287,7 @@ public class TransferGET extends Thread
 				boolean includeSubFolders = Boolean.valueOf(settingsGet.includeSubFolders.data);
 				boolean sync = Boolean.valueOf(settingsGet.syncEnabled.data);
 
-				syncDeletions.clear();
-				syncFolderDeletions.clear();
+				announcedFolder = null;
 				receivedCount = 0;
 				failedCount = 0;
 				skippedCount = 0;
@@ -302,24 +303,6 @@ public class TransferGET extends Thread
 				if (jcmd.isConnected() == false)
 				{
 					jcmd.writeToLog("Transfer abandoned, not connected - retried on the next poll", JLogPanel.ERROR);
-				}
-				else if (getRunMode() != Mode_SHUTDOWN)
-				{
-					// The safe file has shown the remote folder to be the real one, so an empty remote folder empties the local folder too.
-					for (File localFile : syncDeletions)
-					{
-						jcmd.writeToLog("Sync delete = " + localFile.getPath(), JLogPanel.INFO);
-
-						if (localFile.delete() == false)
-						{
-							jcmd.writeToLog("Unable to delete " + localFile.getPath(), JLogPanel.ERROR);
-						}
-					}
-
-					for (File localFolder : syncFolderDeletions)
-					{
-						removeLocalFolder(localFolder);
-					}
 				}
 
 				//jcmd.disconnect();
@@ -356,6 +339,7 @@ public class TransferGET extends Thread
 			if (localSafeFileMissing == false)
 			{
 				jcmd.writeToLog("Nothing received, safe file not found : " + safeFile.getPath(), JLogPanel.WARN);
+				Notify.error(logDestination, "Safe file missing", "Safe file : " + safeFile.getPath(), "Side : local");
 			}
 		}
 
@@ -395,6 +379,7 @@ public class TransferGET extends Thread
 			if (remoteSafeFileMissing == false)
 			{
 				jcmd.writeToLog("Nothing received, safe file not found : " + safeFile, JLogPanel.WARN);
+				Notify.error(logDestination, "Safe file missing", "Safe file : " + safeFile, "Side : remote");
 			}
 		}
 
@@ -409,6 +394,8 @@ public class TransferGET extends Thread
 	 * read. The top folder arrives with the listing taken for the safe file
 	 * check; a sub folder is listed here. A folder which cannot be listed is
 	 * reported and left alone - nothing fetched, nothing deleted, no descent.
+	 * Each folder is finished before the next is started: its files are
+	 * fetched, then its sync deletions are made, then its sub folders follow.
 	 */
 	private void receiveFolder(String remoteFolder, File localFolder, boolean includeSubFolders, boolean sync, JschCommands.RemoteListing listing)
 	{
@@ -432,9 +419,13 @@ public class TransferGET extends Thread
 		Instant listedAt = Instant.now();
 		HashMap<String, SftpATTRS> freshEntries = null;
 
+		// This folder's local files and folders with no remote counterpart - removed once its files are in.
+		ArrayList<File> syncDeletions = new ArrayList<File>();
+		ArrayList<File> syncFolderDeletions = new ArrayList<File>();
+
 		if (sync && Boolean.valueOf(settingsGet.syncDeleteEnabled.data))
 		{
-			collectSyncDeletions(listing.entries(), localFolder, includeSubFolders && Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
+			collectSyncDeletions(listing.entries(), localFolder, includeSubFolders && Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data), syncDeletions, syncFolderDeletions);
 		}
 
 		for (ChannelSftp.LsEntry entry : fileNames)
@@ -458,18 +449,44 @@ public class TransferGET extends Thread
 			}
 
 			String remoteFile = remotePath(remoteFolder, entry.getFilename());
+			// Shown in the log relative to the configured remote folder, as Put does - the Folder heading carries the rest.
+			String relativeFile = relativeRemote(remoteFile);
 			File localFile = new File(localFolder, entry.getFilename());
 
 			if (localFile.isDirectory())
 			{
+				announceFolder(remoteFolder);
 				jcmd.writeToLog("Download skipped, a local folder has the same name " + localFile.getPath(), JLogPanel.ERROR);
+				Notify.error(logDestination, "Download failed", "File : " + remoteFile, "Local : " + localFile.getPath(), "Reason : a local folder has the same name");
 				continue;
 			}
 
-			if (sync && isLocalCopyCurrent(localFile, entry.getAttrs()))
+			boolean replacingNewer = false;
+
+			if (sync)
 			{
-				continue;
+				int state = localCopyState(localFile, entry.getAttrs());
+
+				if (state == COPY_IDENTICAL)
+				{
+					continue;
+				}
+
+				if (state == COPY_NEWER)
+				{
+					if (Boolean.valueOf(settingsGet.overwriteNewer.data) == false)
+					{
+						// Polling detail - this file is kept on every poll until the remote copy catches up.
+						jcmd.writeToLog("Kept, local copy is newer : " + localFile.getPath(), JLogPanel.DEBUG);
+						continue;
+					}
+
+					replacingNewer = true;
+				}
 			}
+
+			// Something is about to happen in this folder, so its heading goes first.
+			announceFolder(remoteFolder);
 
 			if (Boolean.valueOf(settingsGet.stabilityCheckEnabled.data))
 			{
@@ -485,11 +502,12 @@ public class TransferGET extends Thread
 					if (freshEntries == null)
 					{
 						jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
+						Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
 						return;
 					}
 				}
 
-				if (isStable(entry, freshEntries.get(entry.getFilename()), remoteFile) == false)
+				if (isStable(entry, freshEntries.get(entry.getFilename()), relativeFile) == false)
 				{
 					skippedCount++;
 					continue;
@@ -500,13 +518,13 @@ public class TransferGET extends Thread
 
 			if (sync)
 			{
-				jcmd.writeToLog("Sync receiving " + remoteFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
+				jcmd.writeToLog("Sync receiving " + relativeFile + " (" + JFormat.bytes(size) + ")" + (replacingNewer ? " - replacing the newer local copy" : ""), JLogPanel.INFO);
 			}
 			else
 			{
 				// A move shows the listing entry of each file it is about to fetch - the safe and temporary files above are never shown.
 				jcmd.writeToLog(entry.toString(), JLogPanel.DIRECTORY);
-				jcmd.writeToLog("Receiving " + remoteFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
+				jcmd.writeToLog("Receiving " + relativeFile + " (" + JFormat.bytes(size) + ")", JLogPanel.INFO);
 			}
 
 			ensureLocalFolder(localFolder);
@@ -526,12 +544,48 @@ public class TransferGET extends Thread
 				}
 
 				receivedCount++;
-				jcmd.writeToLog("Received " + localFile.getPath() + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
+				TransferStats.getOk(size);
+				jcmd.writeToLog("Received " + relativeFile + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
 			}
 			else
 			{
 				failedCount++;
+				TransferStats.getFailed();
 				jcmd.writeToLog("Download failed, remote file retained " + remoteFile, JLogPanel.ERROR);
+				Notify.error(logDestination, "Download failed", "File : " + remoteFile, "Local : " + localFile.getPath(), "Size : " + JFormat.bytes(size), "Reason : " + (lastLocalError.isEmpty() ? jcmd.getLastError() : lastLocalError));
+			}
+		}
+
+		if ((syncDeletions.size() + syncFolderDeletions.size()) > 0)
+		{
+			if (getRunMode() == Mode_SHUTDOWN)
+			{
+				return;
+			}
+
+			if (jcmd.isConnected() == false)
+			{
+				// The last download may have taken the session with it - the pass reports the lost session once it is over.
+				return;
+			}
+
+			// The safe file has shown the remote folder to be the real one, so an empty remote folder empties the local folder too.
+			announceFolder(remoteFolder);
+
+			for (File localFile : syncDeletions)
+			{
+				jcmd.writeToLog("Sync delete = " + localFile.getPath(), JLogPanel.INFO);
+
+				if (localFile.delete() == false)
+				{
+					jcmd.writeToLog("Unable to delete " + localFile.getPath(), JLogPanel.ERROR);
+					Notify.error(logDestination, "Local delete failed", "Path : " + localFile.getPath());
+				}
+			}
+
+			for (File localSubFolder : syncFolderDeletions)
+			{
+				removeLocalFolder(localSubFolder);
 			}
 		}
 
@@ -557,6 +611,20 @@ public class TransferGET extends Thread
 					receiveFolder(remotePath(remoteFolder, folderName), localSubFolder, includeSubFolders, sync, null);
 				}
 			}
+		}
+	}
+
+	/**
+	 * One blue heading per folder per pass, written just before the first
+	 * line about something happening in it - a poll which finds nothing to
+	 * do in a folder stays silent, as before.
+	 */
+	private void announceFolder(String remoteFolder)
+	{
+		if (remoteFolder.equals(announcedFolder) == false)
+		{
+			announcedFolder = remoteFolder;
+			jcmd.writeToLog("Folder " + remoteFolder, JLogPanel.NORMAL);
 		}
 	}
 
@@ -638,7 +706,7 @@ public class TransferGET extends Thread
 	 * mask and must not be a part-finished download. Nothing is noted if the
 	 * remote folder cannot be listed.
 	 */
-	private void collectSyncDeletions(HashMap<String, SftpATTRS> remoteEntries, File localFolder, boolean syncDeleteFolders)
+	private void collectSyncDeletions(HashMap<String, SftpATTRS> remoteEntries, File localFolder, boolean syncDeleteFolders, ArrayList<File> syncDeletions, ArrayList<File> syncFolderDeletions)
 	{
 		File[] localFiles = localFolder.listFiles();
 
@@ -743,6 +811,7 @@ public class TransferGET extends Thread
 						if (entry.delete() == false)
 						{
 							jcmd.writeToLog("Unable to delete " + entry.getPath(), JLogPanel.ERROR);
+							Notify.error(logDestination, "Local delete failed", "Path : " + entry.getPath());
 							empty = false;
 						}
 					}
@@ -762,6 +831,7 @@ public class TransferGET extends Thread
 				if (removed == false)
 				{
 					jcmd.writeToLog("Unable to delete " + folder.getPath(), JLogPanel.ERROR);
+					Notify.error(logDestination, "Local delete failed", "Folder : " + folder.getPath());
 				}
 			}
 		}
@@ -774,6 +844,8 @@ public class TransferGET extends Thread
 		File localTempFile = new File(localFile.getPath() + settingsGet.tempFileExtension.data);
 
 		boolean received = false;
+
+		lastLocalError = "";
 
 		FileUtils.deleteQuietly(localTempFile);
 
@@ -797,6 +869,7 @@ public class TransferGET extends Thread
 				}
 				catch (IOException e)
 				{
+					lastLocalError = "rename of " + localTempFile.getPath() + " failed - " + Notify.reason(e);
 					jcmd.writeToLog("sftpGET Thread error renaming " + e.getMessage(), JLogPanel.ERROR);
 				}
 			}
@@ -810,20 +883,38 @@ public class TransferGET extends Thread
 		return received;
 	}
 
-	private boolean isLocalCopyCurrent(File localFile, SftpATTRS remoteFile)
-	{
-		boolean result = false;
+	// Sync only: what a remote file means for its local copy.
+	private static final int COPY_TRANSFER = 0;
+	private static final int COPY_IDENTICAL = 1;
+	private static final int COPY_NEWER = 2;
 
-		if (localFile.isFile())
+	/**
+	 * Identical (same size and the same second) is left alone; a local copy
+	 * which is newer is only replaced when Overwrite Newer is ticked; anything
+	 * else - missing, older, or the same second at a different size - is
+	 * fetched. SFTP holds modified times in whole seconds.
+	 */
+	private int localCopyState(File localFile, SftpATTRS remoteFile)
+	{
+		if (localFile.isFile() == false)
 		{
-			// SFTP holds modified times in whole seconds.
-			if ((localFile.length() == remoteFile.getSize()) && (remoteFile.getMTime() <= (localFile.lastModified() / 1000)))
-			{
-				result = true;
-			}
+			return COPY_TRANSFER;
 		}
 
-		return result;
+		long localSeconds = localFile.lastModified() / 1000;
+		long remoteSeconds = remoteFile.getMTime();
+
+		if ((localFile.length() == remoteFile.getSize()) && (localSeconds == remoteSeconds))
+		{
+			return COPY_IDENTICAL;
+		}
+
+		if (localSeconds > remoteSeconds)
+		{
+			return COPY_NEWER;
+		}
+
+		return COPY_TRANSFER;
 	}
 
 	/**
@@ -853,6 +944,17 @@ public class TransferGET extends Thread
 	private String remotePath(String folder, String name)
 	{
 		return folder.endsWith("/") ? folder + name : folder + "/" + name;
+	}
+
+	/**
+	 * The path beneath the configured remote folder, for the log. A path that
+	 * does not start there (it always should) is shown in full.
+	 */
+	private String relativeRemote(String remoteFile)
+	{
+		String root = settingsGet.remoteDir.data;
+		root = root.endsWith("/") ? root : root + "/";
+		return remoteFile.startsWith(root) ? remoteFile.substring(root.length()) : remoteFile;
 	}
 
 }

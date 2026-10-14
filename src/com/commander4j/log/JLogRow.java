@@ -105,6 +105,18 @@ public class JLogRow extends JPanel {
         return tag;
     }
 
+    /** The time the row was added, as shown in its first column. */
+    public String getTime()
+    {
+        return formattedTime;
+    }
+
+    /** The row's text, prefix included. */
+    public String getMessage()
+    {
+        return msgArea.getText();
+    }
+
     /**
      * The width the message column will be given by the BorderLayout once the
      * row is laid out at the width of the log panel (which tracks the viewport).

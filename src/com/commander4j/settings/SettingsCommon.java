@@ -12,6 +12,11 @@ public class SettingsCommon
 	public SettingData webEnabled = new SettingData("false","false");
 	public SettingData webPort = new SettingData("","false");
 
+	// Daily statistics email to the Monitor list; the time is HH:mm on this machine's clock.
+	// Both absent from a config written before the setting existed = off, 06:00.
+	public SettingData statsReportEnabled = new SettingData("false","false");
+	public SettingData statsReportTime = new SettingData("06:00","false");
+
 	// Display level of the desktop log tabs, one of JLogPanel.LEVEL_NAMES; blank (or an unknown
 	// name) means Normal. Written the moment the Show combo changes, not through Apply/Save.
 	public SettingData logLevel = new SettingData("","false");

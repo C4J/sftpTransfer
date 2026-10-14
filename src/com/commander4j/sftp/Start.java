@@ -12,6 +12,7 @@ import org.apache.logging.log4j.spi.LoggerContextFactory;
 
 import com.commander4j.email.DistributionRecord;
 import com.commander4j.email.EmailRecord;
+import com.commander4j.email.Notify;
 import com.commander4j.gui.frame.JFrameSFTPTransfer;
 import com.commander4j.jsch.JschCommands;
 import com.commander4j.log.JLogPanel;
@@ -26,6 +27,7 @@ import com.commander4j.thread.ArchiveThread;
 import com.commander4j.thread.EmailThread;
 import com.commander4j.thread.ReloadWatcher;
 import com.commander4j.thread.ShutdownHook;
+import com.commander4j.thread.StatsThread;
 import com.commander4j.thread.TransferGET;
 import com.commander4j.thread.TransferPUT;
 import com.commander4j.util.JWait;
@@ -42,12 +44,16 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "6.11";
+	public static String version = "6.12";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;
 	public static EmailThread emailthread;
 	public static ArchiveThread archiveThread;
+	public static StatsThread statsThread;
+
+	// Whether the transfers are running, as far as the Started / Stopped emails are concerned.
+	private static boolean processingRunning = false;
 
 	public static JFrameSFTPTransfer gui;
 
@@ -119,6 +125,10 @@ public class Start
 
 			archiveLogDestination = JschCommands.LogDestination_SYS;
 
+			// Read once here for the stats thread, the email subjects and the web viewer below.
+			SettingsCommon settingsCommon = new SettingUtil().readSFTPCommonFromXml();
+			Notify.configure(settingsCommon);
+
 			// Start Services
 
 			emailthread = new EmailThread(emailLogDestination);
@@ -139,7 +149,8 @@ public class Start
 			transferGet.setRunMode(getThreadRunMode);
 			transferGet.start();
 
-			emailthread.addToQueue("Monitor", "Starting", "SFTP Transfer has started", "");
+			statsThread = new StatsThread(settingsCommon);
+			statsThread.start();
 
 			if (args[0].equals("service"))
 			{
@@ -163,9 +174,11 @@ public class Start
 
 				reloadWatcher = new ReloadWatcher();
 				reloadWatcher.start();
+
+				// A service processes from the moment it starts; the desktop only when its Run button is pressed.
+				processingStateChanged(true, "service started");
 			}
 
-			SettingsCommon settingsCommon = new SettingUtil().readSFTPCommonFromXml();
 			applyWebSettings(Boolean.valueOf(settingsCommon.webEnabled.data), WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), settingsCommon.title.data);
 
 			if (args[0].equals("desktop"))
@@ -192,7 +205,9 @@ public class Start
 	 */
 	public static void handOverSettings(SettingsCommon common, SettingsPut put, SettingsGet get, HashMap<String, EmailRecord> email, HashMap<String, DistributionRecord> dist, HashMap<String, JschRecord> jsch)
 	{
+		Notify.configure(common);
 		emailthread.requestSettings(common, email, dist);
+		statsThread.requestSettings(common);
 		archiveThread.requestSettings(put);
 		transferPut.requestSettings(put, common, jsch);
 		transferGet.requestSettings(get, common, jsch);
@@ -318,13 +333,16 @@ public class Start
 				webServer = null;
 			}
 
-			emailthread.addToQueue("Monitor", "Shutdown", "SFTP Transfer has stopped", "");
+			// Queued before the email thread is told to stop, so it goes out in the drain.
+			processingStateChanged(false, "shutdown");
 
 			transferPut.setRunMode(TransferPUT.Mode_SHUTDOWN);
 
 			transferGet.setRunMode(TransferGET.Mode_SHUTDOWN);
 
 			archiveThread.shutdown();
+
+			statsThread.shutdown();
 
 			emailthread.shutdown();
 
@@ -335,6 +353,24 @@ public class Start
 
 			LogManager.getLogger(Start.class).info("sftpTransfer Stopped");
 
+	}
+
+	/**
+	 * The Started / Stopped emails to the Monitor list. "Processing" means the
+	 * transfer threads are running: a service from start to shutdown, the
+	 * desktop while its Run button is down. The latch makes a repeat (window
+	 * close after the button was released, say) a no-op.
+	 */
+	public static synchronized void processingStateChanged(boolean running, String reason)
+	{
+		if (running == processingRunning)
+		{
+			return;
+		}
+
+		processingRunning = running;
+
+		Notify.monitor(running ? "Started" : "Stopped", "Reason : " + reason);
 	}
 
 	public static void waitforServicesShutdown()

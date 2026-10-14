@@ -3,14 +3,15 @@ package com.commander4j.thread;
 import java.io.File;
 import java.util.Calendar;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.Properties;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.logging.log4j.Logger;
 
 import com.commander4j.email.DistributionRecord;
 import com.commander4j.email.EmailRecord;
+import com.commander4j.email.Notify;
 import com.commander4j.email.core.Email;
 import com.commander4j.jsch.JschCommands;
 import com.commander4j.log.JLogPanel;
@@ -30,23 +31,31 @@ import jakarta.mail.internet.MimeBodyPart;
 import jakarta.mail.internet.MimeMessage;
 import jakarta.mail.internet.MimeMultipart;
 
+/**
+ * Sends the queued emails, one at a time, on its own thread. Callers only
+ * ever queue (addToQueue), which never blocks on the mail server: the queue
+ * holds at most QUEUE_CAPACITY emails and anything beyond that is dropped
+ * with a warning. The thread checks the distribution list and its frequency
+ * limit (keyed on list + subject, kept in memory) just before each send.
+ */
 public class EmailThread extends Thread
 {
+	public static final int QUEUE_CAPACITY = 10;
 
-	private Properties smtpProperties =new Properties();
+	private Properties smtpProperties = new Properties();
 	private HashMap<String, DistributionRecord> distList = new HashMap<String, DistributionRecord>();
 	private HashMap<String, Calendar> emailLog = new HashMap<String, Calendar>();
-	private LinkedList<Email> queue = new LinkedList<Email>();
+	private final LinkedBlockingQueue<Email> queue = new LinkedBlockingQueue<Email>(QUEUE_CAPACITY);
 	private SettingsCommon settingsCommon = new SettingsCommon();
 
 	private JUtility util = new JUtility();
 	private SettingUtil settingUtil = new SettingUtil();
 	private JWait wait = new JWait();
-	private boolean enabled = true;
-	
+	private volatile boolean enabled = true;
+
 	private JschCommands jcmd;
 
-	private boolean run = true;
+	private volatile boolean run = true;
 
 	// Settings handed over from the screen, taken up once the queue is empty.
 	private AtomicReference<PendingSettings> pendingSettings = new AtomicReference<PendingSettings>();
@@ -59,15 +68,15 @@ public class EmailThread extends Thread
 	}
 
 	private Logger logger = org.apache.logging.log4j.LogManager.getLogger((EmailThread.class));
-	
+
 	int logDestination = 0;
 
 	public EmailThread(int destination)
 	{
 		super();
-		
+
 		this.logDestination = destination;
-		
+
 		jcmd = new JschCommands(logDestination);
 
 		loadSmtpPropertie();
@@ -81,14 +90,15 @@ public class EmailThread extends Thread
 	public void run()
 	{
 		jcmd.writeToSystemLog("Email Thread started.", JLogPanel.INFO);
-		
-		while ((run) || (queue.size()>0))
+
+		// Anything still queued at shutdown (the Stopped email) goes before the thread ends.
+		while (run || (queue.isEmpty() == false))
 		{
 			processQueue();
-			
+
 			applyPendingSettings();
-			
-			if (queue.size()==0)
+
+			if (queue.isEmpty())
 			{
 				wait.oneSec();
 			}
@@ -112,178 +122,231 @@ public class EmailThread extends Thread
 		return queue.size();
 	}
 
-	public synchronized void addToQueue(String distributionID, String subject, String messageText, String filename)
+	public void addToQueue(String distributionID, String subject, String messageText, String filename)
 	{
-		Email email = new Email(distributionID, subject, messageText, filename);
-		queue.addLast(email);
+		addToQueue(new Email(distributionID, subject, messageText, filename));
 	}
 
-	public synchronized void addToQueue(Email email)
+	/**
+	 * Queues an email, subject to the Email Notifications switch and the
+	 * queue capacity. Never waits on the mail server. DEBUG, not INFO, when
+	 * the switch is off - a repeating error would otherwise write a line per
+	 * poll to the System log.
+	 */
+	public void addToQueue(Email email)
 	{
-		if (Boolean.valueOf(settingsCommon.emailEnabled.data)==true)
+		if (enabled == false)
 		{
-			if (queue.size() < 10)
-			{
-				queue.addLast(email);
-			}
+			jcmd.writeToSystemLog("Email notifications are off (emailEnabled in sftp_common.xml) - not queued : " + email.subject, JLogPanel.DEBUG);
+			return;
 		}
-		else
+
+		if (queue.offer(email) == false)
 		{
-			jcmd.writeToSystemLog("Email is disabled.", JLogPanel.INFO);
+			jcmd.writeToSystemLog("Email queue full (" + QUEUE_CAPACITY + ") - dropped : " + email.subject, JLogPanel.WARN);
 		}
 	}
 
-	public synchronized Email getFromQueue()
+	private void processQueue()
 	{
-		Email result = queue.getFirst();
-		queue.removeFirst();
-		return result;
-	}
+		Email email;
 
-	public synchronized void processQueue()
-	{
-		while (queue.size() > 0)
+		while ((email = queue.poll()) != null)
 		{
-			Email email = getFromQueue();
 			Send(email.distributionID, email.subject, email.messageText, email.filename);
 		}
 	}
 
-	public synchronized boolean Send(String distributionID, String subject, String messageText, String filename)
+	/**
+	 * Sends one email on the calling thread (normally this one). Returns false
+	 * when it was not sent, for whatever reason - that is also logged.
+	 */
+	public boolean Send(String distributionID, String subject, String messageText, String filename)
 	{
-		boolean result = true;
-		
-		if (getlEnabled() == false)
+		boolean result = false;
+
+		if (enabled == false)
 		{
-			jcmd.writeToSystemLog("Email disabled in sftpTransfer.xml", JLogPanel.WARN);
+			jcmd.writeToSystemLog("Email notifications are off (emailEnabled in sftp_common.xml) - not sent : " + subject, JLogPanel.WARN);
 			return result;
 		}
 
-		if (distList.containsKey(distributionID) == true)
+		DistributionRecord list = distList.get(distributionID);
+
+		if (list == null)
 		{
+			jcmd.writeToSystemLog("Disabled or empty email distribution list [" + distributionID + "]. No email sent.", JLogPanel.ERROR);
+			return result;
+		}
 
-			if (distList.get(distributionID).enabled.equals("true"))
-			{
+		if (list.enabled.equals("true") == false)
+		{
+			jcmd.writeToSystemLog("Email Distribution list [" + distributionID + "] is disabled.", JLogPanel.WARN);
+			return result;
+		}
 
-				String emailKey = "[" + distributionID + "] - [" + subject + "]";
-				logger.info(emailKey);
+		// The frequency limit is per list and subject; the time is recorded before the attempt, so a failing server is not hammered.
+		String emailKey = "[" + distributionID + "] - [" + subject + "]";
+		logger.debug(emailKey);
 
-				Calendar lastSent = Calendar.getInstance();
-				Calendar now = Calendar.getInstance();
+		Calendar lastSent = Calendar.getInstance();
+		Calendar now = Calendar.getInstance();
 
-				if (emailLog.containsKey(emailKey))
-				{
-					lastSent = emailLog.get(emailKey);
-				}
-				else
-				{
-					lastSent.add(Calendar.DATE, -1);
-					emailLog.put(emailKey, lastSent);
-				}
-
-				long seconds = (now.getTimeInMillis() - lastSent.getTimeInMillis()) / 1000;
-
-				long ageInMins = seconds / 60;
-
-				if (ageInMins >= distList.get(distributionID).maxFrequencyMins)
-				{
-
-					emailLog.put(emailKey, now);
-					jcmd.writeToSystemLog("Email sending frequency permitted", JLogPanel.INFO);
-
-					try
-					{
-
-						Properties propAuth = new Properties();
-						Properties propNoAuth = new Properties();
-
-						propAuth.putAll(smtpProperties);
-						propNoAuth.putAll(smtpProperties);
-
-						Session authenticatedSession = Session.getInstance(propAuth, new Authenticator()
-						{
-							@Override
-							protected PasswordAuthentication getPasswordAuthentication()
-							{
-								return new PasswordAuthentication(smtpProperties.get("mail.smtp.user").toString(), smtpProperties.get("mail.smtp.password").toString());
-							}
-						});
-
-						propNoAuth.put("mail.smtp.user", "");
-						propNoAuth.put("mail.smtp.password", "");
-
-						Session unauthenticatedSession = Session.getInstance(propNoAuth, null);
-
-						MimeMessage message;
-
-						if (smtpProperties.get("mail.smtp.auth").toString().toLowerCase().equals("true"))
-						{
-							logger.debug("Email authentication required");
-							message = new MimeMessage(authenticatedSession);
-						}
-						else
-						{
-							logger.debug("Email no authentication required");
-							message = new MimeMessage(unauthenticatedSession);
-						}
-
-						String emails = distList.get(distributionID).addressList;
-
-						jcmd.writeToSystemLog("Email to distribution list ["+distributionID+"]", JLogPanel.INFO);
-
-						message.addRecipients(Message.RecipientType.TO, InternetAddress.parse(emails));
-
-						message.setFrom(new InternetAddress(smtpProperties.get("mail.smtp.from").toString()));
-
-						message.setSubject(subject);
-
-						MimeBodyPart mimeBodyPart = new MimeBodyPart();
-
-						mimeBodyPart.setText(messageText, "utf-8");
-
-						Multipart multipart = new MimeMultipart();
-						multipart.addBodyPart(mimeBodyPart);
-
-						if (filename.equals("") == false)
-						{
-							logger.debug("Email add attachment [" + util.getFilenameFromPath(filename) + "]");
-
-							MimeBodyPart attachmentBodyPart = new MimeBodyPart();
-							attachmentBodyPart.attachFile(new File(filename));
-							attachmentBodyPart.setDescription(filename);
-
-							multipart.addBodyPart(attachmentBodyPart);
-
-						}
-						message.setContent(multipart);
-
-						jcmd.writeToSystemLog("Sending Email", JLogPanel.INFO);
-						Transport.send(message);
-						jcmd.writeToSystemLog("Email Sent", JLogPanel.INFO);
-
-						message = null;
-					}
-					catch (Exception ex)
-					{
-						jcmd.writeToSystemLog("Error encountered sending email [" + ex.getMessage() + "]", JLogPanel.ERROR);
-					}
-
-				}
-				else
-				{
-					jcmd.writeToSystemLog("Email suppressed - too frequent", JLogPanel.WARN);
-				}
-
-			}
-			else
-			{
-				jcmd.writeToSystemLog("Email Distribution list [" + distributionID + "] is disabled.", JLogPanel.WARN);
-
-			}
+		if (emailLog.containsKey(emailKey))
+		{
+			lastSent = emailLog.get(emailKey);
 		}
 		else
 		{
-			jcmd.writeToSystemLog("Disabled or empty email distribution list [" + distributionID + "]. No email sent.", JLogPanel.ERROR);
+			lastSent.add(Calendar.DATE, -1);
+			emailLog.put(emailKey, lastSent);
+		}
+
+		long seconds = (now.getTimeInMillis() - lastSent.getTimeInMillis()) / 1000;
+
+		long ageInMins = seconds / 60;
+
+		if (ageInMins < list.maxFrequencyMins)
+		{
+			jcmd.writeToSystemLog("Email suppressed - too frequent (" + list.maxFrequencyMins + " min limit on [" + distributionID + "]) : " + subject, JLogPanel.WARN);
+			return result;
+		}
+
+		emailLog.put(emailKey, now);
+
+		try
+		{
+			jcmd.writeToSystemLog("Sending email to distribution list [" + distributionID + "] : " + subject, JLogPanel.INFO);
+
+			transmit(smtpProperties, list.addressList, subject, messageText, filename);
+
+			jcmd.writeToSystemLog("Email sent to [" + distributionID + "] : " + subject, JLogPanel.INFO);
+
+			if (distributionID.equals(Notify.LIST_ERROR))
+			{
+				TransferStats.errorsEmailed.incrementAndGet();
+			}
+
+			result = true;
+		}
+		catch (Exception ex)
+		{
+			jcmd.writeToSystemLog("Error encountered sending email [" + reason(ex) + "] : " + subject, JLogPanel.ERROR);
+		}
+
+		return result;
+	}
+
+	/**
+	 * The test button: sends at once, on the caller's thread, with the given
+	 * properties and list, ignoring the Email Notifications switch, the queue
+	 * and the frequency log. Returns null when sent, otherwise the reason.
+	 */
+	public String sendNow(HashMap<String, EmailRecord> props, DistributionRecord list, String subject, String body)
+	{
+		try
+		{
+			transmit(smtpPropertiesFrom(props), list.addressList, subject, body, "");
+			return null;
+		}
+		catch (Exception ex)
+		{
+			return reason(ex);
+		}
+	}
+
+	private static String reason(Exception ex)
+	{
+		String msg = ex.getMessage();
+		return ex.getClass().getSimpleName() + ((msg == null) ? "" : " - " + msg.trim());
+	}
+
+	/**
+	 * Builds and sends one message. Authenticated with mail.smtp.user /
+	 * mail.smtp.password when mail.smtp.auth is true, otherwise anonymous.
+	 */
+	private void transmit(Properties smtp, String addresses, String subject, String body, String filename) throws Exception
+	{
+		Properties props = new Properties();
+		props.putAll(smtp);
+
+		Session session;
+
+		if (String.valueOf(smtp.get("mail.smtp.auth")).toLowerCase().equals("true"))
+		{
+			logger.debug("Email authentication required");
+
+			final String user = String.valueOf(smtp.getProperty("mail.smtp.user", ""));
+			final String password = String.valueOf(smtp.getProperty("mail.smtp.password", ""));
+
+			session = Session.getInstance(props, new Authenticator()
+			{
+				@Override
+				protected PasswordAuthentication getPasswordAuthentication()
+				{
+					return new PasswordAuthentication(user, password);
+				}
+			});
+		}
+		else
+		{
+			logger.debug("Email no authentication required");
+
+			props.put("mail.smtp.user", "");
+			props.put("mail.smtp.password", "");
+
+			session = Session.getInstance(props, null);
+		}
+
+		MimeMessage message = new MimeMessage(session);
+
+		message.addRecipients(Message.RecipientType.TO, InternetAddress.parse(addresses));
+
+		message.setFrom(new InternetAddress(String.valueOf(smtp.getProperty("mail.smtp.from", ""))));
+
+		message.setSubject(subject);
+
+		MimeBodyPart mimeBodyPart = new MimeBodyPart();
+
+		mimeBodyPart.setText(body, "utf-8");
+
+		Multipart multipart = new MimeMultipart();
+		multipart.addBodyPart(mimeBodyPart);
+
+		if ((filename != null) && (filename.equals("") == false))
+		{
+			logger.debug("Email add attachment [" + util.getFilenameFromPath(filename) + "]");
+
+			MimeBodyPart attachmentBodyPart = new MimeBodyPart();
+			attachmentBodyPart.attachFile(new File(filename));
+			attachmentBodyPart.setDescription(filename);
+
+			multipart.addBodyPart(attachmentBodyPart);
+		}
+
+		message.setContent(multipart);
+
+		Transport.send(message);
+	}
+
+	/**
+	 * The property rows as Jakarta Mail properties. A row whose Enable box is
+	 * unticked is left out; a row with no flag at all (older file) is kept.
+	 */
+	static Properties smtpPropertiesFrom(HashMap<String, EmailRecord> props)
+	{
+		Properties result = new Properties();
+
+		for (HashMap.Entry<String, EmailRecord> entry : props.entrySet())
+		{
+			EmailRecord rec = entry.getValue();
+
+			if ((rec.enabled != null) && rec.enabled.trim().equalsIgnoreCase("false"))
+			{
+				continue;
+			}
+
+			result.setProperty(entry.getKey(), rec.value == null ? "" : rec.value);
 		}
 
 		return result;
@@ -303,9 +366,9 @@ public class EmailThread extends Thread
 		pendingSettings.set(pending);
 	}
 
-	private synchronized void applyPendingSettings()
+	private void applyPendingSettings()
 	{
-		if (queue.size() == 0)
+		if (queue.isEmpty())
 		{
 			PendingSettings pending = pendingSettings.getAndSet(null);
 
@@ -317,16 +380,10 @@ public class EmailThread extends Thread
 
 				setEnabled(Boolean.valueOf(settingsCommon.emailEnabled.data));
 
-				smtpProperties.clear();
-
-				for (HashMap.Entry<String, EmailRecord> entry : pending.emailProps.entrySet())
-				{
-					smtpProperties.setProperty(entry.getKey(), entry.getValue().value);
-				}
+				smtpProperties = smtpPropertiesFrom(pending.emailProps);
 
 				// Replaced rather than added to, so a list removed on screen is gone here too.
-				distList.clear();
-				distList.putAll(pending.distributionLists);
+				distList = new HashMap<String, DistributionRecord>(pending.distributionLists);
 			}
 		}
 	}
@@ -335,56 +392,41 @@ public class EmailThread extends Thread
 	{
 		int maxtries = 10;
 		int trycount = 1;
-		
-		while (queue.size()>0)
+
+		while (queue.isEmpty() == false)
 		{
 			wait.oneSec();
-			trycount ++;
-			
+			trycount++;
+
 			if (trycount == maxtries)
 			{
 				break;
 			}
 		}
 
-		if (queue.size()==0)
+		if (queue.isEmpty())
 		{
-			
 			jcmd.writeToSystemLog("Email Thread loading settings", JLogPanel.INFO);
-			
+
 			settingsCommon = settingUtil.readSFTPCommonFromXml();
-			
+
 			setEnabled(Boolean.valueOf(settingsCommon.emailEnabled.data));
-			
-			HashMap<String, EmailRecord> emailProps = settingUtil.readEmailPropertiesFromXml();
-	
-			if (smtpProperties != null)
-			{
-				smtpProperties.clear();
-			}
-	
-			for (HashMap.Entry<String, EmailRecord> entry : emailProps.entrySet())
-			{
-				smtpProperties.setProperty(entry.getKey(), entry.getValue().value);
-			}
-			
+
+			smtpProperties = smtpPropertiesFrom(settingUtil.readEmailPropertiesFromXml());
+
 			loadDistributionLists();
 		}
-
 	}
 
 	public void loadDistributionLists()
 	{
-
 		jcmd.writeToSystemLog("Email Thread Loading Distribution Lists", JLogPanel.INFO);
-		
+
 		HashMap<String, DistributionRecord> distrec = settingUtil.readDistributionListFromXml();
 
 		for (HashMap.Entry<String, DistributionRecord> entry : distrec.entrySet())
 		{
 			distList.put(entry.getKey(), entry.getValue());
 		}
-
 	}
-
 }

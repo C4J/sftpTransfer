@@ -8,6 +8,7 @@ import java.awt.Desktop;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.GradientPaint;
 import java.awt.GraphicsConfiguration;
 import java.awt.GraphicsDevice;
 import java.awt.Rectangle;
@@ -21,11 +22,15 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Collections;
 import java.util.Set;
@@ -37,7 +42,10 @@ import javax.swing.DefaultComboBoxModel;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
+import javax.swing.SwingWorker;
 import javax.swing.JPanel;
+import javax.swing.JProgressBar;
+import javax.swing.Painter;
 import javax.swing.JScrollBar;
 import javax.swing.JScrollPane;
 import javax.swing.JSeparator;
@@ -50,6 +58,7 @@ import javax.swing.ScrollPaneConstants;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.UIDefaults;
 import javax.swing.border.EmptyBorder;
 import javax.swing.event.ListDataListener;
 import javax.swing.event.ListDataEvent;
@@ -65,6 +74,7 @@ import com.commander4j.email.DistributionPanel;
 import com.commander4j.email.DistributionRecord;
 import com.commander4j.email.EmailPanel;
 import com.commander4j.email.EmailRecord;
+import com.commander4j.email.Notify;
 import com.commander4j.gui.jdialog.JDialogAbout;
 import com.commander4j.gui.jdialog.JDialogAssignPassword;
 import com.commander4j.gui.jdialog.JDialogLicenses;
@@ -86,6 +96,7 @@ import com.commander4j.settings.ReloadRequest;
 import com.commander4j.settings.ServiceLock;
 import com.commander4j.settings.SettingUtil;
 import com.commander4j.settings.SettingsCommon;
+import com.commander4j.thread.StatsThread;
 import com.commander4j.settings.SettingsGet;
 import com.commander4j.settings.SettingsPut;
 import com.commander4j.sftp.Start;
@@ -129,6 +140,9 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_EmailEnabled_Common;
 	private JCheckBox4j checkBx_WebEnabled_Common;
 	private JSpinner4j spinner_WebPort_Common;
+	private JCheckBox4j checkBx_StatsEnabled_Common;
+	private JTextField4j fld_StatsTime_Common;
+	private JButton4j btn_TestEmail;
 	private JComboBox4j<String> comboBox_Authentication_Type_Common;
 	private JLabel4j_std messageLabel;
 
@@ -150,9 +164,14 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_BackupEnable_Put;
 	private JCheckBox4j checkBx_SubFolders_Put;
 	private JCheckBox4j checkBx_Sync_Put;
+	// Hint beside Sync Mode - says what the box does ticked AND what the default (move) does unticked.
+	private JLabel4j_std lbl_SyncHint_Put;
+	private static final String SYNC_HINT_PUT = "Copy new or changed files and leave the local files in place";
+	private static final String MOVE_HINT_PUT = "Move every file, deleting the local copy once it has been sent";
 	private JCheckBox4j checkBx_SyncDelete_Put;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Put;
 	private JCheckBox4j checkBx_Stability_Put;
+	private JCheckBox4j checkBx_OverwriteNewer_Put;
 	private JSpinner4j spinner_StabilitySeconds_Put;
 	private JButton4j btn_BackupFolderSelect_Put;
 
@@ -165,9 +184,13 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_Enabled_Get;
 	private JCheckBox4j checkBx_SubFolders_Get;
 	private JCheckBox4j checkBx_Sync_Get;
+	private JLabel4j_std lbl_SyncHint_Get;
+	private static final String SYNC_HINT_GET = "Copy new or changed files and leave the remote files in place";
+	private static final String MOVE_HINT_GET = "Move every file, deleting the remote copy once it has been received";
 	private JCheckBox4j checkBx_SyncDelete_Get;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Get;
 	private JCheckBox4j checkBx_Stability_Get;
+	private JCheckBox4j checkBx_OverwriteNewer_Get;
 	private JSpinner4j spinner_StabilitySeconds_Get;
 
 	// private JCheckBox chckbx_PrivateKeyPassword = new JCheckBox("");
@@ -192,6 +215,17 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_ShowSystem_Log;
 	private JCheckBox4j checkBx_ShowPut_Log;
 	private JCheckBox4j checkBx_ShowGet_Log;
+	// Two bars under the log strips, one per direction, for the file in flight.
+	// Put (upload) in orange, Get (download) in blue, both on the same flat
+	// painter. Swing thread only.
+	private JProgressBar progressBar_Put;
+	private JProgressBar progressBar_Get;
+	private static final Color PROGRESS_PUT_COLOUR = new Color(191, 98, 4);
+	private static final Color PROGRESS_GET_COLOUR = new Color(51, 122, 183);
+	public static final int PROGRESS_START = 0;
+	public static final int PROGRESS_UPDATE = 1;
+	public static final int PROGRESS_END = 2;
+	public static final int PROGRESS_FAILED = 3;
 	private JScrollPane scrollPane_Properties;
 	private JScrollPane scrollPane_Email;
 	private JScrollPane scrollPanel_Distribution;
@@ -204,7 +238,7 @@ public class JFrameSFTPTransfer extends JFrame
 	// Put and Get tabs and the property tables end at 547), and the split pane divider
 	// starts here. The log panel has the rest of the window.
 	private static final int TAB_PANEL_WIDTH = 560;
-	private static final int LOG_PANEL_MIN_WIDTH = 240; // the Log Level strip needs 225
+	private static final int LOG_PANEL_MIN_WIDTH = 460; // the one-row System/Put/Get + buttons + Log Level strip needs ~446; the log side has 473
 
 	// Display level of the log panel (JLogPanel.LEVEL_*). Written on the Swing thread
 	// from the Log Level combo, read by the Put and Get threads. Remembered in sftp_common.xml
@@ -223,7 +257,8 @@ public class JFrameSFTPTransfer extends JFrame
 	private JUtility util = new JUtility();
 	private Dimension btn = new Dimension(32, 32);
 	private JSeparator seperator = new JSeparator();
-	private JschCommands jcmd = new JschCommands(JschCommands.LogDestination_NoGUI);
+	// Its lines (browse and safe-file connections) show on the System tab, which is where the status line sends the user.
+	private JschCommands jcmd = new JschCommands(JschCommands.LogDestination_SYS);
 
 	private JButton4j btn_Apply;
 	private JButton4j btn_Reload;
@@ -453,12 +488,14 @@ public class JFrameSFTPTransfer extends JFrame
 					btnStartStop.setIcon(Common.icon_connected);
 					Start.transferPut.requestMode(TransferPUT.Mode_RUN);
 					Start.transferGet.requestMode(TransferPUT.Mode_RUN);
+					Start.processingStateChanged(true, "Run button pressed");
 				}
 				else
 				{
 					btnStartStop.setIcon(Common.icon_disconnected);
 					Start.transferPut.requestMode(TransferPUT.Mode_PAUSE);
 					Start.transferGet.requestMode(TransferPUT.Mode_PAUSE);
+					Start.processingStateChanged(false, "Run button released");
 				}
 			}
 		});
@@ -560,6 +597,19 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_Distribution_Title.setFont(Common.font_bold);
 		lbl_Distribution_Title.setBounds(scrollPanel_Distribution.getX() + 5, scrollPanel_Distribution.getY() - 20, 536, 30);
 		email_Tab_Panel.add(lbl_Distribution_Title);
+
+		// Sends one message with the values on screen, whatever the Email Notifications box says.
+		btn_TestEmail = new JButton4j("Send Test Email");
+		btn_TestEmail.setToolTipText("Send a test email to one of the lists above using the settings on screen");
+		btn_TestEmail.setBounds(6, 464, 150, 25);
+		btn_TestEmail.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				sendTestEmail();
+			}
+		});
+		email_Tab_Panel.add(btn_TestEmail);
 
 		// COMMON
 
@@ -877,6 +927,35 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_EmailEnable_Common.setBounds(0, 370, 149, 27);
 		sftp_common_Tab_Panel.add(lbl_EmailEnable_Common);
 
+		// DAILY STATISTICS EMAIL - to the Monitor list, once a day at HH:mm on this machine's clock.
+
+		JLabel4j_std lbl_StatsEnable_Common = new JLabel4j_std("Daily Statistics Email");
+		lbl_StatsEnable_Common.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_StatsEnable_Common.setBounds(190, 370, 150, 27);
+		sftp_common_Tab_Panel.add(lbl_StatsEnable_Common);
+
+		checkBx_StatsEnabled_Common = new JCheckBox4j("");
+		checkBx_StatsEnabled_Common.setBounds(345, 370, 23, 23);
+		checkBx_StatsEnabled_Common.setToolTipText("Email the day's transfer counts to the Monitor list");
+		sftp_common_Tab_Panel.add(checkBx_StatsEnabled_Common);
+
+		JLabel4j_std lbl_StatsTime_Common = new JLabel4j_std("at");
+		lbl_StatsTime_Common.setBounds(372, 370, 20, 27);
+		sftp_common_Tab_Panel.add(lbl_StatsTime_Common);
+
+		fld_StatsTime_Common = new JTextField4j(5);
+		fld_StatsTime_Common.setBounds(395, 370, 50, 23);
+		fld_StatsTime_Common.setToolTipText("HH:mm, 24 hour, this machine's clock");
+		sftp_common_Tab_Panel.add(fld_StatsTime_Common);
+
+		checkBx_StatsEnabled_Common.addItemListener(new ItemListener()
+		{
+			public void itemStateChanged(ItemEvent e)
+			{
+				fld_StatsTime_Common.setEnabled(checkBx_StatsEnabled_Common.isSelected());
+			}
+		});
+
 		// WEB LOG VIEWER - a read-only page showing the three logs, for service installs.
 
 		JLabel4j_std lbl_WebEnable_Common = new JLabel4j_std("Web Log Viewer");
@@ -938,7 +1017,7 @@ public class JFrameSFTPTransfer extends JFrame
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				setPutBackupState(checkBx_BackupEnable_Put.isSelected());
+				setPutBackupRowState();
 			}
 		});
 		checkBx_BackupEnable_Put.setBounds(161, 130, 23, 23);
@@ -1051,44 +1130,59 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Put.setBounds(161, 310, 23, 23);
 		sftp_put_Tab_Panel.add(checkBx_Sync_Put);
 
-		JLabel4j_std lbl_SyncHint_Put = new JLabel4j_std("Copy new or changed files and leave the local files in place");
+		lbl_SyncHint_Put = new JLabel4j_std(SYNC_HINT_PUT);
 		lbl_SyncHint_Put.setBounds(196, 310, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncHint_Put);
 
+		JLabel4j_std lbl_OverwriteNewer_Put = new JLabel4j_std("Overwrite Newer");
+		lbl_OverwriteNewer_Put.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_OverwriteNewer_Put.setBounds(6, 340, 143, 27);
+		sftp_put_Tab_Panel.add(lbl_OverwriteNewer_Put);
+
+		checkBx_OverwriteNewer_Put = new JCheckBox4j("");
+		checkBx_OverwriteNewer_Put.setBounds(161, 340, 23, 23);
+		checkBx_OverwriteNewer_Put.setToolTipText("Sync only - untick to leave a remote file alone when it is newer than the local one");
+		sftp_put_Tab_Panel.add(checkBx_OverwriteNewer_Put);
+
+		JLabel4j_std lbl_OverwriteNewerHint_Put = new JLabel4j_std("Also replace a newer remote file with an older local one");
+		lbl_OverwriteNewerHint_Put.setBounds(196, 340, 351, 27);
+		sftp_put_Tab_Panel.add(lbl_OverwriteNewerHint_Put);
+
 		JLabel4j_std lbl_SyncDelete_Put = new JLabel4j_std("Sync Deletions");
 		lbl_SyncDelete_Put.setHorizontalAlignment(SwingConstants.TRAILING);
-		lbl_SyncDelete_Put.setBounds(6, 340, 143, 27);
+		lbl_SyncDelete_Put.setBounds(6, 370, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDelete_Put);
 
 		checkBx_SyncDelete_Put = new JCheckBox4j("");
 		checkBx_SyncDelete_Put.setEnabled(checkBx_Sync_Put.isSelected());
-		checkBx_SyncDelete_Put.setBounds(161, 340, 23, 23);
+		checkBx_SyncDelete_Put.setBounds(161, 370, 23, 23);
 		sftp_put_Tab_Panel.add(checkBx_SyncDelete_Put);
 
 		JLabel4j_std lbl_SyncDeleteHint_Put = new JLabel4j_std("Also delete remote files which are no longer in the local folder");
-		lbl_SyncDeleteHint_Put.setBounds(196, 340, 351, 27);
+		lbl_SyncDeleteHint_Put.setBounds(196, 370, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteHint_Put);
 
 		JLabel4j_std lbl_SyncDeleteFolders_Put = new JLabel4j_std("Sync Folder Deletions");
 		lbl_SyncDeleteFolders_Put.setHorizontalAlignment(SwingConstants.TRAILING);
-		lbl_SyncDeleteFolders_Put.setBounds(6, 370, 143, 27);
+		lbl_SyncDeleteFolders_Put.setBounds(6, 400, 143, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteFolders_Put);
 
 		checkBx_SyncDeleteFolders_Put = new JCheckBox4j("");
-		checkBx_SyncDeleteFolders_Put.setBounds(161, 370, 23, 23);
+		checkBx_SyncDeleteFolders_Put.setBounds(161, 400, 23, 23);
 		sftp_put_Tab_Panel.add(checkBx_SyncDeleteFolders_Put);
 
 		JLabel4j_std lbl_SyncDeleteFoldersHint_Put = new JLabel4j_std("Also remove remote folders which are no longer in the local folder");
-		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 370, 351, 27);
+		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 400, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Put);
 
-		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
+		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
 
 		ActionListener syncDeleteStateListener_Put = new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
+				setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
+				setPutBackupRowState();
 			}
 		};
 
@@ -1098,7 +1192,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		checkBx_Stability_Put = new JCheckBox4j("");
 		spinner_StabilitySeconds_Put = new JSpinner4j();
-		addStabilityRow(sftp_put_Tab_Panel, 400, checkBx_Stability_Put, spinner_StabilitySeconds_Put, settingsPut.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+		addStabilityRow(sftp_put_Tab_Panel, 430, checkBx_Stability_Put, spinner_StabilitySeconds_Put, settingsPut.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
 
 		JButton4j btn_LocalFolderSelect_Put = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Put.addActionListener(new ActionListener()
@@ -1235,44 +1329,58 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Get.setBounds(161, 250, 23, 23);
 		sftp_get_Tab_Panel.add(checkBx_Sync_Get);
 
-		JLabel4j_std lbl_SyncHint_Get = new JLabel4j_std("Copy new or changed files and leave the remote files in place");
+		lbl_SyncHint_Get = new JLabel4j_std(SYNC_HINT_GET);
 		lbl_SyncHint_Get.setBounds(196, 250, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncHint_Get);
 
+		JLabel4j_std lbl_OverwriteNewer_Get = new JLabel4j_std("Overwrite Newer");
+		lbl_OverwriteNewer_Get.setHorizontalAlignment(SwingConstants.TRAILING);
+		lbl_OverwriteNewer_Get.setBounds(6, 280, 143, 27);
+		sftp_get_Tab_Panel.add(lbl_OverwriteNewer_Get);
+
+		checkBx_OverwriteNewer_Get = new JCheckBox4j("");
+		checkBx_OverwriteNewer_Get.setBounds(161, 280, 23, 23);
+		checkBx_OverwriteNewer_Get.setToolTipText("Sync only - untick to leave a local file alone when it is newer than the remote one");
+		sftp_get_Tab_Panel.add(checkBx_OverwriteNewer_Get);
+
+		JLabel4j_std lbl_OverwriteNewerHint_Get = new JLabel4j_std("Also replace a newer local file with an older remote one");
+		lbl_OverwriteNewerHint_Get.setBounds(196, 280, 351, 27);
+		sftp_get_Tab_Panel.add(lbl_OverwriteNewerHint_Get);
+
 		JLabel4j_std lbl_SyncDelete_Get = new JLabel4j_std("Sync Deletions");
 		lbl_SyncDelete_Get.setHorizontalAlignment(SwingConstants.TRAILING);
-		lbl_SyncDelete_Get.setBounds(6, 280, 143, 27);
+		lbl_SyncDelete_Get.setBounds(6, 310, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDelete_Get);
 
 		checkBx_SyncDelete_Get = new JCheckBox4j("");
 		checkBx_SyncDelete_Get.setEnabled(checkBx_Sync_Get.isSelected());
-		checkBx_SyncDelete_Get.setBounds(161, 280, 23, 23);
+		checkBx_SyncDelete_Get.setBounds(161, 310, 23, 23);
 		sftp_get_Tab_Panel.add(checkBx_SyncDelete_Get);
 
 		JLabel4j_std lbl_SyncDeleteHint_Get = new JLabel4j_std("Also delete local files which are no longer in the remote folder");
-		lbl_SyncDeleteHint_Get.setBounds(196, 280, 351, 27);
+		lbl_SyncDeleteHint_Get.setBounds(196, 310, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteHint_Get);
 
 		JLabel4j_std lbl_SyncDeleteFolders_Get = new JLabel4j_std("Sync Folder Deletions");
 		lbl_SyncDeleteFolders_Get.setHorizontalAlignment(SwingConstants.TRAILING);
-		lbl_SyncDeleteFolders_Get.setBounds(6, 310, 143, 27);
+		lbl_SyncDeleteFolders_Get.setBounds(6, 340, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteFolders_Get);
 
 		checkBx_SyncDeleteFolders_Get = new JCheckBox4j("");
-		checkBx_SyncDeleteFolders_Get.setBounds(161, 310, 23, 23);
+		checkBx_SyncDeleteFolders_Get.setBounds(161, 340, 23, 23);
 		sftp_get_Tab_Panel.add(checkBx_SyncDeleteFolders_Get);
 
 		JLabel4j_std lbl_SyncDeleteFoldersHint_Get = new JLabel4j_std("Also remove local folders which are no longer in the remote folder");
-		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 310, 351, 27);
+		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 340, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Get);
 
-		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
+		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
 
 		ActionListener syncDeleteStateListener_Get = new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
+				setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
 			}
 		};
 
@@ -1282,7 +1390,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		checkBx_Stability_Get = new JCheckBox4j("");
 		spinner_StabilitySeconds_Get = new JSpinner4j();
-		addStabilityRow(sftp_get_Tab_Panel, 340, checkBx_Stability_Get, spinner_StabilitySeconds_Get, settingsGet.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+		addStabilityRow(sftp_get_Tab_Panel, 370, checkBx_Stability_Get, spinner_StabilitySeconds_Get, settingsGet.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
 
 		JButton4j btn_LocalFolderSelect_Get = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Get.addActionListener(new ActionListener()
@@ -1559,6 +1667,9 @@ public class JFrameSFTPTransfer extends JFrame
 
 				writeToSystemLog("Transfers from this window paused - the service has taken over.", JLogPanel.WARN);
 				displayMessage("Transfers from this window paused - the service has taken over.", messageType_WARN);
+
+				// setSelected(false) above does not fire the button's listener.
+				Start.processingStateChanged(false, "service on this machine has taken over");
 			}
 
 			btnStartStop.setEnabled(false);
@@ -1630,34 +1741,117 @@ public class JFrameSFTPTransfer extends JFrame
 
 		JComboBox4j<String> comboBox_Level = new JComboBox4j<String>();
 		comboBox_Level.setModel(logLevelModel);
-		comboBox_Level.setPreferredSize(new Dimension(160, 23));
+		// Arial rather than the monospaced combo font: "Warnings and errors" needs 170 in
+		// Monospaced and the one-row strip would then not fit the log side (473 at the fixed
+		// 1100 window) - see LOG_PANEL_MIN_WIDTH.
+		comboBox_Level.setFont(Common.font_std);
+		comboBox_Level.setPreferredSize(new Dimension(140, 23));
 		comboBox_Level.setToolTipText("Detail shown in the log from now on - Debug adds the polling of the remote folders");
-
-		JPanel levelStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 4));
-		levelStrip.add(lbl_Show);
-		levelStrip.add(comboBox_Level);
 
 		checkBx_ShowSystem_Log = logCheckBox("System", JschCommands.LogDestination_SYS, "Show the System log lines");
 		checkBx_ShowPut_Log = logCheckBox("Put", JschCommands.LogDestination_PUT, "Show the Put log lines");
 		checkBx_ShowGet_Log = logCheckBox("Get", JschCommands.LogDestination_GET, "Show the Get log lines");
 
-		JPanel showStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+		// Clear empties the window only; Save writes the rows as shown. The file under logs/ is the complete record either way.
+		Dimension logBtn = new Dimension(32, 27);
+
+		JButton4j btn_ClearLog = new JButton4j(Common.icon_erase);
+		btn_ClearLog.setToolTipText("Clear the log window (the log file is untouched)");
+		btn_ClearLog.setPreferredSize(logBtn);
+		btn_ClearLog.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				panel_Log_Scrollable.clear();
+			}
+		});
+
+		JButton4j btn_SaveLog = new JButton4j(Common.icon_save);
+		btn_SaveLog.setToolTipText("Save the log window as shown to a text file");
+		btn_SaveLog.setPreferredSize(logBtn);
+		btn_SaveLog.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				saveLogWindow();
+			}
+		});
+
+		// One row: the three logs, the two buttons, then the level.
+		JPanel showStrip = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 4));
 		showStrip.add(checkBx_ShowSystem_Log);
 		showStrip.add(checkBx_ShowPut_Log);
 		showStrip.add(checkBx_ShowGet_Log);
+		showStrip.add(btn_ClearLog);
+		showStrip.add(btn_SaveLog);
+		showStrip.add(lbl_Show);
+		showStrip.add(comboBox_Level);
+
+		progressBar_Put = progressBar("Put", "Progress of the file being sent (upload)", PROGRESS_PUT_COLOUR);
+		progressBar_Get = progressBar("Get", "Progress of the file being received (download)", PROGRESS_GET_COLOUR);
+
+		// Edges in line with the strip above (FlowLayout hgap 5).
+		JPanel progressStrip = new JPanel(new java.awt.GridLayout(2, 1, 0, 3));
+		progressStrip.setBorder(new EmptyBorder(2, 5, 4, 5));
+		progressStrip.add(progressBar_Put);
+		progressStrip.add(progressBar_Get);
+		progressStrip.setMaximumSize(new Dimension(Integer.MAX_VALUE, 55));
 
 		JPanel strips = new JPanel();
 		strips.setLayout(new BoxLayout(strips, BoxLayout.PAGE_AXIS));
-		levelStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
 		showStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
-		strips.add(levelStrip);
+		progressStrip.setAlignmentX(Component.LEFT_ALIGNMENT);
 		strips.add(showStrip);
+		strips.add(progressStrip);
 
 		JPanel side = new JPanel(new BorderLayout(0, 0));
 		side.add(strips, BorderLayout.NORTH);
 		side.add(rows, BorderLayout.CENTER);
 
 		return side;
+	}
+
+	/**
+	 * Writes the log window as shown (ticked logs only, oldest first) to a
+	 * text file of the user's choosing, suggested under logs/ with the time
+	 * in its name. The window holds at most the last maxLogRows rows - the
+	 * file under logs/ is the complete record.
+	 */
+	private void saveLogWindow()
+	{
+		File logFolder = new File(System.getProperty("user.dir"), "logs");
+		String suggested = "sftpTransfer_window_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")) + ".txt";
+
+		JFileChooser fc = new JFileChooser(logFolder.isDirectory() ? logFolder : new File(System.getProperty("user.dir")));
+		fc.setDialogTitle("Save log window");
+		fc.setSelectedFile(new File(fc.getCurrentDirectory(), suggested));
+
+		if (fc.showSaveDialog(JFrameSFTPTransfer.this) != JFileChooser.APPROVE_OPTION)
+		{
+			return;
+		}
+
+		File target = fc.getSelectedFile();
+
+		if (target.exists())
+		{
+			if (JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, target.getName() + " already exists - replace it ?", "Confirm", JOptionPane.YES_NO_OPTION, 0, Common.icon_confirm) != JOptionPane.YES_OPTION)
+			{
+				return;
+			}
+		}
+
+		java.util.List<String> lines = panel_Log_Scrollable.visibleLines();
+
+		try
+		{
+			Files.write(target.toPath(), lines, StandardCharsets.UTF_8);
+			displayMessage("Log window saved - " + lines.size() + " lines to " + target.getPath(), messageType_INFO);
+		}
+		catch (IOException e)
+		{
+			displayMessage("Could not save the log window - " + e.getMessage(), messageType_ERROR);
+		}
 	}
 
 	private JCheckBox4j logCheckBox(String caption, int tag, String tip)
@@ -1714,6 +1908,103 @@ public class JFrameSFTPTransfer extends JFrame
 			panel_Log_Scrollable.addLog(prefix + logdata, level, logDestination);
 			scrollLogToEnd();
 		});
+	}
+
+	/**
+	 * One bar per direction, idle text is just the direction. The colour is a
+	 * per-component Nimbus painter override (setForeground only colours the
+	 * text under Nimbus), a flat full-height round rect so both bars match;
+	 * null would fall back to the look and feel's inset default painter.
+	 */
+	private JProgressBar progressBar(String idleText, String tip, Color colour)
+	{
+		JProgressBar bar = new JProgressBar(0, 100);
+		bar.setStringPainted(true);
+		bar.setString(idleText);
+		bar.setFont(Common.font_std);
+		bar.setToolTipText(tip);
+		bar.setPreferredSize(new Dimension(100, 23));
+
+		if (colour != null)
+		{
+			// Nimbus paints the filled part with these painters, sized to the filled width.
+			Painter<JProgressBar> fill = (g, b, w, h) -> {
+				g.setPaint(new GradientPaint(0, 0, colour.brighter(), 0, h, colour));
+				g.fillRoundRect(0, 0, w, h, 5, 5);
+			};
+
+			UIDefaults overrides = new UIDefaults();
+			overrides.put("ProgressBar[Enabled].foregroundPainter", fill);
+			overrides.put("ProgressBar[Enabled+Finished].foregroundPainter", fill);
+			overrides.put("ProgressBar[Enabled+Indeterminate].foregroundPainter", fill);
+			overrides.put("ProgressBar[Enabled+Finished+Indeterminate].foregroundPainter", fill);
+			bar.putClientProperty("Nimbus.Overrides", overrides);
+			bar.putClientProperty("Nimbus.Overrides.InheritDefaults", Boolean.TRUE);
+		}
+
+		return bar;
+	}
+
+	/**
+	 * Called from the Put and Get threads through JschCommands for the file in
+	 * flight (already throttled to whole percentages there). Get has its own
+	 * bar; everything else (Put, and the System connection's safe-file writes)
+	 * shows on the Put bar. A finished file stays on show until the next one
+	 * starts.
+	 */
+	public void transferProgress(int logDestination, String fileName, long done, long total, int state)
+	{
+		SwingUtilities.invokeLater(() -> {
+
+			boolean isGet = (logDestination == JschCommands.LogDestination_GET);
+			JProgressBar bar = isGet ? progressBar_Get : progressBar_Put;
+			String direction = isGet ? "Get " : "Put ";
+			boolean known = total > 0;
+			int pct = known ? (int) Math.min(100, (done * 100) / total) : 0;
+
+			switch (state)
+			{
+			case PROGRESS_END:
+				bar.setIndeterminate(false);
+				bar.setValue(100);
+				bar.setString(direction + fileName + " - " + sizeText(done) + " complete");
+				break;
+			case PROGRESS_FAILED:
+				bar.setIndeterminate(false);
+				bar.setValue(pct);
+				bar.setString(direction + fileName + " - failed after " + sizeText(done));
+				break;
+			default:
+				bar.setIndeterminate(!known);
+				bar.setValue(pct);
+				if (known)
+				{
+					bar.setString(direction + fileName + "  " + pct + "%  (" + sizeText(done) + " of " + sizeText(total) + ")");
+				}
+				else
+				{
+					bar.setString(direction + fileName + "  " + sizeText(done));
+				}
+				break;
+			}
+		});
+	}
+
+	private static String sizeText(long bytes)
+	{
+		if (bytes < 1024)
+		{
+			return bytes + " B";
+		}
+		if (bytes < 1024 * 1024)
+		{
+			return String.format("%.1f KB", bytes / 1024.0);
+		}
+		if (bytes < 1024L * 1024 * 1024)
+		{
+			return String.format("%.1f MB", bytes / (1024.0 * 1024));
+		}
+		return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
 	}
 
 	private void scrollLogToEnd()
@@ -1830,8 +2121,14 @@ public class JFrameSFTPTransfer extends JFrame
 		return Math.max(1, Math.min(3600, result));
 	}
 
-	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders)
+	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders, JCheckBox4j overwriteNewer, JLabel4j_std syncHint, String syncText, String moveText)
 	{
+		// The hint describes the mode in force: unticked is the original move behaviour.
+		syncHint.setText(sync.isSelected() ? syncText : moveText);
+
+		// Overwrite Newer only applies to a sync. Its value is kept while sync is off - it is inert then, and comes back as it was.
+		overwriteNewer.setEnabled(sync.isSelected());
+
 		// Deleting only applies to a sync, and is never left armed while sync is switched off.
 		if (sync.isSelected() == false)
 		{
@@ -1849,6 +2146,19 @@ public class JFrameSFTPTransfer extends JFrame
 		}
 
 		syncDeleteFolders.setEnabled(folderDeletions);
+	}
+
+	/**
+	 * A backup only applies to a move (the copy of a file about to be deleted
+	 * locally), so the whole row is greyed out while Sync Mode is ticked. The
+	 * tick is kept, inert, and comes back when sync is switched off; the Put
+	 * thread also skips the copy in sync mode.
+	 */
+	private void setPutBackupRowState()
+	{
+		boolean move = (checkBx_Sync_Put.isSelected() == false);
+		checkBx_BackupEnable_Put.setEnabled(move);
+		setPutBackupState(move && checkBx_BackupEnable_Put.isSelected());
 	}
 
 	private void setPutBackupState(boolean state)
@@ -1988,6 +2298,8 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsCommon.emailEnabled.data = String.valueOf(checkBx_EmailEnabled_Common.isSelected());
 		settingsCommon.webEnabled.data = String.valueOf(checkBx_WebEnabled_Common.isSelected());
 		settingsCommon.webPort.data = String.valueOf(spinner_WebPort_Common.getValue());
+		settingsCommon.statsReportEnabled.data = String.valueOf(checkBx_StatsEnabled_Common.isSelected());
+		settingsCommon.statsReportTime.data = fld_StatsTime_Common.getText().trim();
 		settingsCommon.knownHostsFile.data = fld_KnownHostsFile_Common.getText();
 		settingsCommon.autoAddtoKnownHostsFile.data = String.valueOf(chkbox_AddKnownHosts_Common.isSelected());
 
@@ -2027,6 +2339,7 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsPut.syncEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected());
 		settingsPut.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected());
 		settingsPut.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Put.isSelected() && checkBx_Sync_Put.isSelected() && checkBx_SyncDelete_Put.isSelected() && checkBx_SyncDeleteFolders_Put.isSelected());
+		settingsPut.overwriteNewer.data = String.valueOf(checkBx_OverwriteNewer_Put.isSelected());
 		settingsPut.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Put.isSelected());
 		settingsPut.stabilitySeconds.data = spinner_StabilitySeconds_Put.getValue().toString();
 
@@ -2041,6 +2354,7 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsGet.syncEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected());
 		settingsGet.syncDeleteEnabled.data = String.valueOf(checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected());
 		settingsGet.syncDeleteFoldersEnabled.data = String.valueOf(checkBx_SubFolders_Get.isSelected() && checkBx_Sync_Get.isSelected() && checkBx_SyncDelete_Get.isSelected() && checkBx_SyncDeleteFolders_Get.isSelected());
+		settingsGet.overwriteNewer.data = String.valueOf(checkBx_OverwriteNewer_Get.isSelected());
 		settingsGet.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Get.isSelected());
 		settingsGet.stabilitySeconds.data = spinner_StabilitySeconds_Get.getValue().toString();
 
@@ -2163,7 +2477,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		displayMessage("Connecting to " + settingsCommon.remoteHost.data + " ...", messageType_INFO);
 
-		String chosen = jcmd.viewTree(settingsCommon, JFrameSFTPTransfer.this, "/", folderField.getText());
+		String chosen = jcmd.viewTree(settingsCommon, jschConfig, JFrameSFTPTransfer.this, "/", folderField.getText());
 
 		if (chosen == null)
 		{
@@ -2432,6 +2746,9 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_WebEnabled_Common.setSelected(Boolean.valueOf(settingsCommon.webEnabled.data));
 		spinner_WebPort_Common.setValue(Integer.valueOf(WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT)));
 		spinner_WebPort_Common.setEnabled(checkBx_WebEnabled_Common.isSelected());
+		checkBx_StatsEnabled_Common.setSelected(Boolean.valueOf(settingsCommon.statsReportEnabled.data));
+		fld_StatsTime_Common.setText(StatsThread.parseTime(settingsCommon.statsReportTime.data, StatsThread.DEFAULT_TIME).format(StatsThread.TIME_FORMAT));
+		fld_StatsTime_Common.setEnabled(checkBx_StatsEnabled_Common.isSelected());
 		if (logLevelModel != null)
 		{
 			logLevelModel.setSelectedItem(JLogPanel.LEVEL_NAMES[JLogPanel.levelOf(settingsCommon.logLevel.data)]);
@@ -2466,6 +2783,7 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Put.setSelected(Boolean.valueOf(settingsPut.syncEnabled.data));
 		checkBx_SyncDelete_Put.setSelected(checkBx_Sync_Put.isSelected() && Boolean.valueOf(settingsPut.syncDeleteEnabled.data));
 		checkBx_SyncDeleteFolders_Put.setSelected(Boolean.valueOf(settingsPut.syncDeleteFoldersEnabled.data));
+		checkBx_OverwriteNewer_Put.setSelected(Boolean.valueOf(settingsPut.overwriteNewer.data));
 		checkBx_Stability_Put.setSelected(Boolean.valueOf(settingsPut.stabilityCheckEnabled.data));
 		spinner_StabilitySeconds_Put.setValue(Integer.valueOf(stabilitySeconds(settingsPut.stabilitySeconds.data)));
 		spinner_StabilitySeconds_Put.setEnabled(checkBx_Stability_Put.isSelected());
@@ -2481,6 +2799,7 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Sync_Get.setSelected(Boolean.valueOf(settingsGet.syncEnabled.data));
 		checkBx_SyncDelete_Get.setSelected(checkBx_Sync_Get.isSelected() && Boolean.valueOf(settingsGet.syncDeleteEnabled.data));
 		checkBx_SyncDeleteFolders_Get.setSelected(Boolean.valueOf(settingsGet.syncDeleteFoldersEnabled.data));
+		checkBx_OverwriteNewer_Get.setSelected(Boolean.valueOf(settingsGet.overwriteNewer.data));
 		checkBx_Stability_Get.setSelected(Boolean.valueOf(settingsGet.stabilityCheckEnabled.data));
 		spinner_StabilitySeconds_Get.setValue(Integer.valueOf(stabilitySeconds(settingsGet.stabilitySeconds.data)));
 		spinner_StabilitySeconds_Get.setEnabled(checkBx_Stability_Get.isSelected());
@@ -2541,9 +2860,9 @@ public class JFrameSFTPTransfer extends JFrame
 		setPrivateKeyState(chckbx_checkPrivateKey_Common.isSelected());
 		setPrivateKeyPasswordState(chckbx_PrivateKeyPassword_Common.isSelected());
 		setKnownHostsState(chkbox_KnownHosts_Common.isSelected());
-		setPutBackupState(checkBx_BackupEnable_Put.isSelected());
-		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put);
-		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get);
+		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
+		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
+		setPutBackupRowState();
 	}
 
 	private JPanel[] settingsPanels()
@@ -2727,6 +3046,13 @@ public class JFrameSFTPTransfer extends JFrame
 		commitSpinnerEdits();
 		collectSettings();
 
+		// Checked here, not in collectSettings(), which the remote folder browse also calls.
+		if (checkBx_StatsEnabled_Common.isSelected() && (StatsThread.parseTime(settingsCommon.statsReportTime.data, null) == null))
+		{
+			displayMessage("Settings NOT applied - Daily Statistics time must be HH:mm (e.g. 06:00).", messageType_ERROR);
+			return;
+		}
+
 		if (saveSettings() == false)
 		{
 			displayMessage("Settings NOT applied - a settings file could not be saved, see the System log.", messageType_ERROR);
@@ -2792,6 +3118,84 @@ public class JFrameSFTPTransfer extends JFrame
 		{
 			JOptionPane.showMessageDialog(JFrameSFTPTransfer.this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE, Common.icon_confirm);
 		}
+	}
+
+	/**
+	 * The Send Test Email button: one message to a list chosen from those on
+	 * screen, with the SMTP rows on screen, sent at once on a worker thread.
+	 * Ignores the Email Notifications box, the queue and the frequency limit -
+	 * it is there to prove the credentials.
+	 */
+	private void sendTestEmail()
+	{
+		commitSpinnerEdits();
+		collectSettings();
+
+		ArrayList<String> ids = new ArrayList<String>(distConfig.keySet());
+		java.util.Collections.sort(ids);
+
+		if (ids.isEmpty())
+		{
+			displayMessage("No distribution list on screen to send a test email to.", messageType_ERROR);
+			return;
+		}
+
+		Object choice = JOptionPane.showInputDialog(JFrameSFTPTransfer.this, "Send the test email to which distribution list ?", "Test Email", JOptionPane.QUESTION_MESSAGE, Common.icon_confirm, ids.toArray(), ids.get(0));
+
+		if (choice == null)
+		{
+			return;
+		}
+
+		final String id = choice.toString();
+		final DistributionRecord list = distConfig.get(id);
+		final HashMap<String, EmailRecord> props = new HashMap<String, EmailRecord>(emailConfig);
+		final boolean notificationsOff = (checkBx_EmailEnabled_Common.isSelected() == false);
+		final String host = String.valueOf(props.containsKey("mail.smtp.host") ? props.get("mail.smtp.host").value : "");
+
+		Notify.configure(settingsCommon);
+
+		displayMessage("Sending test email to [" + id + "] ...", messageType_INFO);
+		btn_TestEmail.setEnabled(false);
+		setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.WAIT_CURSOR));
+
+		new SwingWorker<String, Void>()
+		{
+			protected String doInBackground()
+			{
+				return Start.emailthread.sendNow(props, list, Notify.subject("Test Email"), Notify.body("Test Email", "List : " + id, "Sent from the Email Properties tab with the settings on screen."));
+			}
+
+			protected void done()
+			{
+				setCursor(java.awt.Cursor.getDefaultCursor());
+				btn_TestEmail.setEnabled(true);
+
+				String reason;
+
+				try
+				{
+					reason = get();
+				}
+				catch (Exception e)
+				{
+					reason = e.getMessage();
+				}
+
+				String suffix = notificationsOff ? "  (Email Notifications is unticked - the threads will not send)" : "";
+
+				if (reason == null)
+				{
+					writeToSystemLog("Test email sent to [" + id + "] " + list.addressList + " via " + host, JLogPanel.INFO);
+					displayMessage("Test email sent to " + list.addressList + " via " + host + suffix, messageType_INFO);
+				}
+				else
+				{
+					writeToSystemLog("Test email to [" + id + "] failed - " + reason, JLogPanel.ERROR);
+					displayMessage("Test email failed - " + reason + suffix, messageType_ERROR);
+				}
+			}
+		}.execute();
 	}
 
 	private void displayMessage(String msg, int msgType)

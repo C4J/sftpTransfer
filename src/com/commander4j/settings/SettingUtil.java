@@ -158,6 +158,18 @@ public class SettingUtil
 							result.webPort.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.webPort.encrypted = encrypted;
 							break;
+						case "statsReportEnabled":
+							result.statsReportEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.statsReportEnabled.encrypted = encrypted;
+							break;
+						case "statsReportTime":
+							result.statsReportTime.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							if (result.statsReportTime.data.equals(""))
+							{
+								result.statsReportTime.data = "06:00";
+							}
+							result.statsReportTime.encrypted = encrypted;
+							break;
 						case "logLevel":
 							result.logLevel.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.logLevel.encrypted = encrypted;
@@ -325,6 +337,10 @@ public class SettingUtil
 							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.syncDeleteFoldersEnabled.encrypted = encrypted;
 							break;
+						case "overwriteNewer":
+							result.overwriteNewer.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.overwriteNewer.encrypted = encrypted;
+							break;
 						case "stabilityCheckEnabled":
 							result.stabilityCheckEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.stabilityCheckEnabled.encrypted = encrypted;
@@ -473,6 +489,10 @@ public class SettingUtil
 							result.syncDeleteFoldersEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.syncDeleteFoldersEnabled.encrypted = encrypted;
 							break;
+						case "overwriteNewer":
+							result.overwriteNewer.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
+							result.overwriteNewer.encrypted = encrypted;
+							break;
 						case "stabilityCheckEnabled":
 							result.stabilityCheckEnabled.data = util.setBooleanFlag(cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted));
 							result.stabilityCheckEnabled.encrypted = encrypted;
@@ -552,6 +572,16 @@ public class SettingUtil
 			webPort.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.webPort.data, settings.webPort.encrypted)));
 			webPort.setAttribute("encrypted", settings.webPort.encrypted);
 			settingsElement.appendChild(webPort);
+
+			Element statsReportEnabled = (Element) doc.createElement("statsReportEnabled");
+			statsReportEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.statsReportEnabled.data, settings.statsReportEnabled.encrypted)));
+			statsReportEnabled.setAttribute("encrypted", settings.statsReportEnabled.encrypted);
+			settingsElement.appendChild(statsReportEnabled);
+
+			Element statsReportTime = (Element) doc.createElement("statsReportTime");
+			statsReportTime.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.statsReportTime.data, settings.statsReportTime.encrypted)));
+			statsReportTime.setAttribute("encrypted", settings.statsReportTime.encrypted);
+			settingsElement.appendChild(statsReportTime);
 
 			Element logLevel = (Element) doc.createElement("logLevel");
 			logLevel.appendChild(doc.createTextNode(settings.logLevel.data));
@@ -755,6 +785,11 @@ public class SettingUtil
 			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
 			settingsElement.appendChild(syncDeleteFoldersEnabled);
 
+			Element overwriteNewer = (Element) doc.createElement("overwriteNewer");
+			overwriteNewer.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.overwriteNewer.data, settings.overwriteNewer.encrypted)));
+			overwriteNewer.setAttribute("encrypted", settings.overwriteNewer.encrypted);
+			settingsElement.appendChild(overwriteNewer);
+
 			Element stabilityCheckEnabled = (Element) doc.createElement("stabilityCheckEnabled");
 			stabilityCheckEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityCheckEnabled.data, settings.stabilityCheckEnabled.encrypted)));
 			stabilityCheckEnabled.setAttribute("encrypted", settings.stabilityCheckEnabled.encrypted);
@@ -888,6 +923,11 @@ public class SettingUtil
 			syncDeleteFoldersEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.syncDeleteFoldersEnabled.data, settings.syncDeleteFoldersEnabled.encrypted)));
 			syncDeleteFoldersEnabled.setAttribute("encrypted", settings.syncDeleteFoldersEnabled.encrypted);
 			settingsElement.appendChild(syncDeleteFoldersEnabled);
+
+			Element overwriteNewer = (Element) doc.createElement("overwriteNewer");
+			overwriteNewer.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.overwriteNewer.data, settings.overwriteNewer.encrypted)));
+			overwriteNewer.setAttribute("encrypted", settings.overwriteNewer.encrypted);
+			settingsElement.appendChild(overwriteNewer);
 
 			Element stabilityCheckEnabled = (Element) doc.createElement("stabilityCheckEnabled");
 			stabilityCheckEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityCheckEnabled.data, settings.stabilityCheckEnabled.encrypted)));

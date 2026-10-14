@@ -1,5 +1,6 @@
 package com.commander4j.jsch;
 
+import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.util.Collections;
@@ -13,6 +14,7 @@ import org.apache.logging.log4j.Logger;
 
 import com.commander4j.gui.frame.JFrameSFTPTransfer;
 import com.commander4j.gui.jdialog.RemoteFolderChooser;
+import com.commander4j.email.Notify;
 import com.commander4j.log.JLogPanel;
 
 import com.commander4j.settings.SettingsCommon;
@@ -26,6 +28,7 @@ import com.jcraft.jsch.JSchUnknownHostKeyException;
 import com.jcraft.jsch.Session;
 import com.jcraft.jsch.SftpATTRS;
 import com.jcraft.jsch.SftpException;
+import com.jcraft.jsch.SftpProgressMonitor;
 import com.jcraft.jsch.UserInfo;
 
 public class JschCommands
@@ -54,21 +57,60 @@ public class JschCommands
 	// session found closed while this is set was dropped by the server or the network.
 	private boolean sessionOpen = false;
 
+	// The reason of the last failed command, for the transfer threads' error emails.
+	private volatile String lastError = "";
+
+	// One "Connection failed" email per outage, whatever the list's frequency limit.
+	private boolean connectFailedReported = false;
+
+	public String getLastError()
+	{
+		return lastError;
+	}
+
+	private static String reason(Exception e)
+	{
+		String msg = e.getMessage();
+		return (msg == null) ? e.getClass().getSimpleName() : msg;
+	}
+
+	/**
+	 * Raises an Error-list email for this connection's direction. Only the Put
+	 * and Get threads' connections email; the window's own commands (browse,
+	 * safe-file buttons) and probes stay quiet.
+	 */
+	private void notifyError(String event, String... detail)
+	{
+		if ((defaultLogDestination == LogDestination_PUT) || (defaultLogDestination == LogDestination_GET))
+		{
+			Notify.error(defaultLogDestination, event, detail);
+		}
+	}
+
+	private void connectFailed(Exception e)
+	{
+		lastError = reason(e);
+
+		writeToLog("Connection to " + hostLabel() + " failed - " + lastError, JLogPanel.ERROR);
+
+		if (connectFailedReported == false)
+		{
+			connectFailedReported = true;
+			notifyError("Connection failed", "Host : " + hostLabel(), "User : " + settingsCommon.username.data, "Reason : " + lastError);
+		}
+	}
+
 	/**
 	 * Opens the remote folder chooser. Returns the folder chosen (the default
 	 * if the dialog was cancelled), or null when the server could not be
 	 * connected to - the reason is on the log, and the caller should say so
-	 * on the status line, since nothing else shows.
+	 * on the status line, since nothing else shows. The connection is made
+	 * the same way as a transfer: with the jsch properties applied, and a
+	 * second try for a host which has just been added to the known hosts file.
 	 */
-	public String viewTree(SettingsCommon sc, JFrameSFTPTransfer frame, String rootNode, String defaultNode)
+	public String viewTree(SettingsCommon sc, HashMap<String, JschRecord> jschConfig, JFrameSFTPTransfer frame, String rootNode, String defaultNode)
 	{
-		// A session left open by an earlier look-up would still be showing the old host.
-		resetConnection();
-
-		assignCommonSettings(sc);
-		connect();
-
-		if (isConnected() == false)
+		if (connect(sc, jschConfig) == false)
 		{
 			return null;
 		}
@@ -236,6 +278,8 @@ public class JschCommands
 
 				writeToLog("Connected to " + hostLabel() + " (server " + jschSession.getServerVersion() + ")", JLogPanel.INFO);
 
+				connectFailedReported = false;
+
 				result = true;
 			}
 			catch (JSchUnknownHostKeyException e)
@@ -248,12 +292,12 @@ public class JschCommands
 				}
 				else
 				{
-					writeToLog("Connection to " + hostLabel() + " failed - " + e.getMessage(), JLogPanel.ERROR);
+					connectFailed(e);
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog("Connection to " + hostLabel() + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				connectFailed(e);
 			}
 
 			if (result == false)
@@ -365,6 +409,7 @@ public class JschCommands
 			// Closed by the server or the network, not by this side.
 			sessionOpen = false;
 			writeToLog("Connection to " + hostLabel() + " lost", JLogPanel.WARN);
+			notifyError("Connection lost", "Host : " + hostLabel());
 		}
 
 		return result;
@@ -393,7 +438,9 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog("rm " + filename + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("rm " + filename + " failed - " + lastError, JLogPanel.ERROR);
+				notifyError("Remote delete failed", "Path : " + filename, "Reason : " + lastError);
 			}
 		}
 		return result;
@@ -470,7 +517,9 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog("rmdir " + folder + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("rmdir " + folder + " failed - " + lastError, JLogPanel.ERROR);
+				notifyError("Remote delete failed", "Folder : " + folder, "Reason : " + lastError);
 			}
 		}
 		return result;
@@ -507,14 +556,16 @@ public class JschCommands
 			{
 				if (isRemoteFilePresent(from))
 				{
-					writeToLog("rename " + from + "," + to, JLogPanel.NORMAL);
+					// Names only - both live in the folder the heading above named; the failure line keeps the full paths.
+					writeToLog("rename " + name(from) + "," + name(to), JLogPanel.NORMAL);
 					channel.rename(from, to);
 					result = true;
 				}
 			}
 			catch (Exception e)
 			{
-				writeToLog("rename " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("rename " + from + "," + to + " failed - " + lastError, JLogPanel.ERROR);
 			}
 		}
 		return result;
@@ -523,18 +574,27 @@ public class JschCommands
 	public boolean put(String from, String to)
 	{
 		boolean result = false;
+		TransferProgress progress = null;
 
 		if (isConnected())
 		{
+			lastError = "";
+
 			try
 			{
-				writeToLog("put " + from + "," + to, JLogPanel.NORMAL);
-				channel.put(from, to);
+				// Name only - the Folder heading above it already carries the path;
+				// the failure line below keeps the full from,to.
+				String name = new File(from).getName();
+				writeToLog("put " + name, JLogPanel.NORMAL);
+				progress = progressMonitor(name);
+				channel.put(from, to, progress);
 				result = true;
 			}
 			catch (Exception e)
 			{
-				writeToLog("put " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("put " + from + "," + to + " failed - " + lastError, JLogPanel.ERROR);
+				progressFailed(progress);
 			}
 		}
 		return result;
@@ -563,23 +623,105 @@ public class JschCommands
 	public boolean get(String from, String to)
 	{
 		boolean result = false;
+		TransferProgress progress = null;
 
 		if (isConnected())
 		{
+			lastError = "";
+
 			try (OutputStream os = new FileOutputStream(to))
 			{
-				writeToLog("get " + from + "," + to, JLogPanel.NORMAL);
-
-				channel.get(from, os);
+				// Name only - the Folder heading above it already carries the path;
+				// the failure line below keeps the full from,to.
+				String name = name(from);
+				writeToLog("get " + name, JLogPanel.NORMAL);
+				progress = progressMonitor(name);
+				channel.get(from, os, progress);
 
 				result = true;
 			}
 			catch (Exception e)
 			{
-				writeToLog("get " + from + "," + to + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("get " + from + "," + to + " failed - " + lastError, JLogPanel.ERROR);
+				progressFailed(progress);
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * Progress of one put or get for the bar above the log window. Only built
+	 * when there is a window - the service passes null and jsch skips the
+	 * callbacks. jsch calls count() for every block (about 32K), far too often
+	 * for the Swing queue, so only a change in the whole-number percentage is
+	 * passed on (every megabyte when the size is unknown). The local name is
+	 * shown for a put and the remote name for a get - the temporary extension
+	 * is on the other side and would otherwise appear in the bar.
+	 */
+	private TransferProgress progressMonitor(String fileName)
+	{
+		if (Start.gui == null)
+		{
+			return null;
+		}
+
+		return new TransferProgress(fileName);
+	}
+
+	private void progressFailed(TransferProgress progress)
+	{
+		if (progress != null)
+		{
+			progress.failed();
+		}
+	}
+
+	private class TransferProgress implements SftpProgressMonitor
+	{
+		private final String fileName;
+		private long total = SftpProgressMonitor.UNKNOWN_SIZE;
+		private long done = 0;
+		private long lastStep = -1;
+
+		private TransferProgress(String fileName)
+		{
+			this.fileName = fileName;
+		}
+
+		public void init(int op, String src, String dest, long max)
+		{
+			total = max;
+			done = 0;
+			lastStep = -1;
+			Start.gui.transferProgress(defaultLogDestination, fileName, done, total, JFrameSFTPTransfer.PROGRESS_START);
+		}
+
+		public boolean count(long bytes)
+		{
+			done += bytes;
+
+			long step = (total > 0) ? (done * 100) / total : done / (1024 * 1024);
+
+			if (step != lastStep)
+			{
+				lastStep = step;
+				Start.gui.transferProgress(defaultLogDestination, fileName, done, total, JFrameSFTPTransfer.PROGRESS_UPDATE);
+			}
+
+			// false would abort the transfer - the hook for a Stop button, not used yet.
+			return true;
+		}
+
+		public void end()
+		{
+			Start.gui.transferProgress(defaultLogDestination, fileName, done, total, JFrameSFTPTransfer.PROGRESS_END);
+		}
+
+		private void failed()
+		{
+			Start.gui.transferProgress(defaultLogDestination, fileName, done, total, JFrameSFTPTransfer.PROGRESS_FAILED);
+		}
 	}
 
 	public boolean delete(String file)
@@ -596,7 +738,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("stat " + remoteFilename, JLogPanel.NORMAL);
+				writeToLog("stat " + name(remoteFilename), JLogPanel.NORMAL);
 				SftpATTRS attrs = channel.stat(remoteFilename);
 				if (attrs.isDir() == false)
 				{
@@ -669,7 +811,9 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				writeToLog("ls " + path + "/" + mask + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("ls " + path + "/" + mask + " failed - " + lastError, JLogPanel.ERROR);
+				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
 			}
 		}
 
@@ -715,7 +859,9 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				writeToLog(command + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog(command + " failed - " + lastError, JLogPanel.ERROR);
+				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
 			}
 		}
 
@@ -753,7 +899,9 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				writeToLog("ls " + path + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("ls " + path + " failed - " + lastError, JLogPanel.ERROR);
+				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
 			}
 		}
 
@@ -923,9 +1071,12 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
+				lastError = reason(e);
+
 				if (logFailure)
 				{
-					writeToLog("ls " + path + " failed - " + e.getMessage(), JLogPanel.ERROR);
+					writeToLog("ls " + path + " failed - " + lastError, JLogPanel.ERROR);
+					notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
 				}
 
 				result = null;
@@ -967,6 +1118,7 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
+				lastError = reason(e);
 				result = null;
 			}
 		}
@@ -1030,11 +1182,23 @@ public class JschCommands
 			}
 			catch (Exception e)
 			{
-				writeToLog("mkdir " + baseFolder + "/" + relativeFolder + " failed - " + e.getMessage(), JLogPanel.ERROR);
+				lastError = reason(e);
+				writeToLog("mkdir " + baseFolder + "/" + relativeFolder + " failed - " + lastError, JLogPanel.ERROR);
 			}
 		}
 
 		return result;
+	}
+
+	/**
+	 * The last segment of a remote path, for the per-file log lines (put, get,
+	 * rename, stat, setstat) - the Folder heading above them carries the path.
+	 * Failure lines and the folder commands (mkdir, rmdir, folder stat) keep
+	 * the full path.
+	 */
+	private static String name(String remotePath)
+	{
+		return remotePath.substring(remotePath.lastIndexOf('/') + 1);
 	}
 
 	/**
@@ -1048,7 +1212,7 @@ public class JschCommands
 		{
 			try
 			{
-				writeToLog("setstat " + filename + " mtime=" + mtime, JLogPanel.NORMAL);
+				writeToLog("setstat " + name(filename) + " mtime=" + mtime, JLogPanel.NORMAL);
 				channel.setMtime(filename, mtime);
 				result = true;
 			}

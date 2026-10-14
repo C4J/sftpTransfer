@@ -112,6 +112,30 @@ public class JLogPanel extends JPanel implements Scrollable {
         scrollToLastVisible();
     }
 
+    /** Empties the window. The log file and the web viewer keep their lines. */
+    public void clear() {
+        removeAll();
+        revalidate();
+        repaint();
+    }
+
+    /**
+     * The rows as shown - the ones whose log is ticked, oldest first - one
+     * line each: the time, then the text with its [PUT]/[GET]/[SYS] prefix.
+     */
+    public java.util.List<String> visibleLines() {
+        java.util.List<String> lines = new java.util.ArrayList<String>();
+
+        for (Component c : getComponents()) {
+            if ((c instanceof JLogRow) && c.isVisible()) {
+                JLogRow row = (JLogRow) c;
+                lines.add(row.getTime() + " " + row.getMessage());
+            }
+        }
+
+        return lines;
+    }
+
     /** Whether rows with this tag are currently shown. */
     public boolean isTagVisible(int tag) {
         return hiddenTags.contains(tag) == false;
