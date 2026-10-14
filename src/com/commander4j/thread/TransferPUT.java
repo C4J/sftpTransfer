@@ -97,10 +97,11 @@ public class TransferPUT extends Thread
 	// Why sendFile() last returned false when no SFTP command threw, for the email.
 	private String lastSendError = "";
 
-	// Counts for the pass summary.
+	// Counts for the pass summary, and the files sent for the Transfer email.
 	private int sentCount = 0;
 	private int failedCount = 0;
 	private int skippedCount = 0;
+	private final ArrayList<String> sentFiles = new ArrayList<String>();
 
 
 	public TransferPUT(int destination)
@@ -381,6 +382,7 @@ public class TransferPUT extends Thread
 		sentCount = 0;
 		failedCount = 0;
 		skippedCount = 0;
+		sentFiles.clear();
 		Instant passStarted = Instant.now();
 
 		File sourceDirectory = new File(settingsPut.localDir.data);
@@ -622,6 +624,7 @@ public class TransferPUT extends Thread
 									}
 
 									sentCount++;
+									sentFiles.add(relativeFile + " (" + JFormat.bytes(size) + ")");
 									TransferStats.putOk(size);
 									jcmd.writeToLog("Sent " + relativeFile + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
 								}
@@ -708,13 +711,31 @@ public class TransferPUT extends Thread
 
 	/**
 	 * One line at the end of a pass in which at least one file was sent,
-	 * failed or skipped - a pass with nothing to do stays silent.
+	 * failed or skipped - a pass with nothing to do stays silent. A pass
+	 * which sent something also goes to the Transfer list, with the files
+	 * named; failures are the Error list's business.
 	 */
 	private void logPassSummary(Instant passStarted)
 	{
 		if ((sentCount + failedCount + skippedCount) > 0)
 		{
-			jcmd.writeToLog("Transfer finished - " + sentCount + " sent, " + failedCount + " failed, " + skippedCount + " skipped in " + JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis()), JLogPanel.INFO);
+			String duration = JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis());
+
+			jcmd.writeToLog("Transfer finished - " + sentCount + " sent, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
+
+			if (sentCount > 0)
+			{
+				ArrayList<String> detail = new ArrayList<String>();
+				detail.add("Local folder  : " + settingsPut.localDir.data);
+				detail.add("Remote folder : " + settingsPut.remoteDir.data);
+				detail.add("Sent     : " + sentCount);
+				detail.add("Failed   : " + failedCount);
+				detail.add("Skipped  : " + skippedCount);
+				detail.add("Duration : " + duration);
+				Notify.appendFiles(detail, sentFiles);
+
+				Notify.transfer(logDestination, "Files sent", detail.toArray(new String[0]));
+			}
 		}
 	}
 

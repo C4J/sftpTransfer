@@ -88,10 +88,11 @@ public class TransferGET extends Thread
 	// Why the last local step of a download failed (rename of the temporary file), for the email.
 	private String lastLocalError = "";
 
-	// Counts for the pass summary.
+	// Counts for the pass summary, and the files received for the Transfer email.
 	private int receivedCount = 0;
 	private int failedCount = 0;
 	private int skippedCount = 0;
+	private final ArrayList<String> receivedFiles = new ArrayList<String>();
 
 	public TransferGET(int destination)
 	{
@@ -291,14 +292,12 @@ public class TransferGET extends Thread
 				receivedCount = 0;
 				failedCount = 0;
 				skippedCount = 0;
+				receivedFiles.clear();
 				Instant passStarted = Instant.now();
 
 				receiveFolder(settingsGet.remoteDir.data, new File(settingsGet.localDir.data), includeSubFolders, sync, topListing);
 
-				if ((receivedCount + failedCount + skippedCount) > 0)
-				{
-					jcmd.writeToLog("Transfer finished - " + receivedCount + " received, " + failedCount + " failed, " + skippedCount + " skipped in " + JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis()), JLogPanel.INFO);
-				}
+				logPassSummary(passStarted);
 
 				if (jcmd.isConnected() == false)
 				{
@@ -315,6 +314,36 @@ public class TransferGET extends Thread
 			setRunMode(getRequestMode());
 		}
 
+	}
+
+	/**
+	 * One line at the end of a pass in which at least one file was received,
+	 * failed or skipped - a pass with nothing to do stays silent. A pass
+	 * which received something also goes to the Transfer list, with the
+	 * files named; failures are the Error list's business.
+	 */
+	private void logPassSummary(Instant passStarted)
+	{
+		if ((receivedCount + failedCount + skippedCount) > 0)
+		{
+			String duration = JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis());
+
+			jcmd.writeToLog("Transfer finished - " + receivedCount + " received, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
+
+			if (receivedCount > 0)
+			{
+				ArrayList<String> detail = new ArrayList<String>();
+				detail.add("Remote folder : " + settingsGet.remoteDir.data);
+				detail.add("Local folder  : " + settingsGet.localDir.data);
+				detail.add("Received : " + receivedCount);
+				detail.add("Failed   : " + failedCount);
+				detail.add("Skipped  : " + skippedCount);
+				detail.add("Duration : " + duration);
+				Notify.appendFiles(detail, receivedFiles);
+
+				Notify.transfer(logDestination, "Files received", detail.toArray(new String[0]));
+			}
+		}
 	}
 
 	/**
@@ -544,6 +573,7 @@ public class TransferGET extends Thread
 				}
 
 				receivedCount++;
+				receivedFiles.add(relativeFile + " (" + JFormat.bytes(size) + ")");
 				TransferStats.getOk(size);
 				jcmd.writeToLog("Received " + relativeFile + " (" + JFormat.bytes(size) + ") in " + JFormat.seconds(Duration.between(fileStarted, Instant.now()).toMillis()), JLogPanel.INFO);
 			}

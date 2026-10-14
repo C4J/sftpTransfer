@@ -3,6 +3,7 @@ package com.commander4j.email;
 import java.net.InetAddress;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 import com.commander4j.email.core.Email;
 import com.commander4j.jsch.JschCommands;
@@ -26,6 +27,7 @@ public final class Notify
 {
 	public static final String LIST_ERROR = "Error";
 	public static final String LIST_MONITOR = "Monitor";
+	public static final String LIST_TRANSFER = "Transfer";
 
 	private static volatile String title = "";
 	private static volatile String host = null;
@@ -55,6 +57,26 @@ public final class Notify
 	{
 		TransferStats.errorsRaised.incrementAndGet();
 		send(LIST_ERROR, direction(logDestination) + event, detail);
+	}
+
+	/**
+	 * The files one direction sent or received in a pass; the list is
+	 * "Transfer". Sent only when the list exists and is enabled - a quiet
+	 * skip, not the error or warning the other lists get, because most
+	 * installs will leave it off. The subject is the same for every pass of
+	 * a direction, so a frequency limit on this list would drop whole passes;
+	 * it is meant to stay at 0.
+	 */
+	public static void transfer(int logDestination, String event, String... detail)
+	{
+		EmailThread thread = Start.emailthread;
+
+		if ((thread == null) || (thread.isListActive(LIST_TRANSFER) == false))
+		{
+			return;
+		}
+
+		send(LIST_TRANSFER, direction(logDestination) + event, detail);
 	}
 
 	/** Start, stop and the daily statistics; the list is "Monitor". */
@@ -88,6 +110,32 @@ public final class Notify
 		}
 
 		return b.toString();
+	}
+
+	/** The most file lines a Transfer email carries - a sync pass can move thousands. */
+	public static final int MAX_FILE_LINES = 500;
+
+	/**
+	 * Adds a "Files :" heading and one indented line per file to the detail
+	 * lines of a Transfer email, stopping at MAX_FILE_LINES with a count of
+	 * the rest.
+	 */
+	public static void appendFiles(List<String> detail, List<String> files)
+	{
+		detail.add("");
+		detail.add("Files :");
+
+		int shown = Math.min(files.size(), MAX_FILE_LINES);
+
+		for (int i = 0; i < shown; i++)
+		{
+			detail.add("  " + files.get(i));
+		}
+
+		if (files.size() > shown)
+		{
+			detail.add("  ... and " + (files.size() - shown) + " more");
+		}
 	}
 
 	/** Exception class and message for a Reason line - an IOException's message is often just a path. */

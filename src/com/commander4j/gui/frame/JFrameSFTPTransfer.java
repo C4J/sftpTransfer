@@ -585,7 +585,8 @@ public class JFrameSFTPTransfer extends JFrame
 		// DISTRIBUTION
 
 		scrollPanel_Distribution = new JScrollPane();
-		scrollPanel_Distribution.setBounds(6, 290, 541, 170);
+		// Three rows (Error, Monitor, Transfer) - sized for them so the button below stays inside the tab on Windows.
+		scrollPanel_Distribution.setBounds(6, 290, 541, 85);
 		email_Tab_Panel.add(scrollPanel_Distribution);
 
 		panel_Distribution_Scrollable = new JPanel();
@@ -601,7 +602,7 @@ public class JFrameSFTPTransfer extends JFrame
 		// Sends one message with the values on screen, whatever the Email Notifications box says.
 		btn_TestEmail = new JButton4j("Send Test Email");
 		btn_TestEmail.setToolTipText("Send a test email to one of the lists above using the settings on screen");
-		btn_TestEmail.setBounds(6, 464, 150, 25);
+		btn_TestEmail.setBounds(6, 381, 150, 25);
 		btn_TestEmail.addActionListener(new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
@@ -2836,15 +2837,20 @@ public class JFrameSFTPTransfer extends JFrame
 
 		panel_Distribution_Scrollable.removeAll();
 
-		for (HashMap.Entry<String, DistributionRecord> entry : distConfig.entrySet())
+		// By id, as the test-email chooser lists them - the map's own order changes from run to run.
+		ArrayList<String> distIds = new ArrayList<String>(distConfig.keySet());
+		java.util.Collections.sort(distIds);
+
+		for (String id : distIds)
 		{
+			DistributionRecord record = distConfig.get(id);
 			DistributionPanel dl = new DistributionPanel();
 
-			dl.fld_ListID.setText(entry.getKey());
+			dl.fld_ListID.setText(id);
 
-			dl.fld_Address.setText(entry.getValue().addressList);
-			dl.fld_MaxFrequency.setValue(entry.getValue().maxFrequencyMins);
-			dl.fld_Enabled.setSelected(Boolean.valueOf(entry.getValue().enabled));
+			dl.fld_Address.setText(record.addressList);
+			dl.fld_MaxFrequency.setValue(record.maxFrequencyMins);
+			dl.fld_Enabled.setSelected(Boolean.valueOf(record.enabled));
 
 			panel_Distribution_Scrollable.add(dl);
 		}

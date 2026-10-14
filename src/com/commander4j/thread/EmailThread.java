@@ -43,7 +43,7 @@ public class EmailThread extends Thread
 	public static final int QUEUE_CAPACITY = 10;
 
 	private Properties smtpProperties = new Properties();
-	private HashMap<String, DistributionRecord> distList = new HashMap<String, DistributionRecord>();
+	private volatile HashMap<String, DistributionRecord> distList = new HashMap<String, DistributionRecord>();
 	private HashMap<String, Calendar> emailLog = new HashMap<String, Calendar>();
 	private final LinkedBlockingQueue<Email> queue = new LinkedBlockingQueue<Email>(QUEUE_CAPACITY);
 	private SettingsCommon settingsCommon = new SettingsCommon();
@@ -161,6 +161,14 @@ public class EmailThread extends Thread
 	 * Sends one email on the calling thread (normally this one). Returns false
 	 * when it was not sent, for whatever reason - that is also logged.
 	 */
+	/** True when the list is on the current settings and enabled - the only case Notify.transfer queues on. */
+	public boolean isListActive(String distributionID)
+	{
+		DistributionRecord list = distList.get(distributionID);
+
+		return (list != null) && list.enabled.equals("true");
+	}
+
 	public boolean Send(String distributionID, String subject, String messageText, String filename)
 	{
 		boolean result = false;

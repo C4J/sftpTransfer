@@ -20,6 +20,7 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import com.commander4j.email.DistributionRecord;
+import com.commander4j.email.Notify;
 import com.commander4j.email.EmailRecord;
 import com.commander4j.jsch.JschRecord;
 import com.commander4j.util.EncryptData;
@@ -1119,6 +1120,22 @@ public class SettingUtil
 		catch (Exception e)
 		{
 			e.printStackTrace();
+		}
+
+		// The lists the program sends to always appear, so a file written before a list
+		// existed (Transfer arrived later than Error and Monitor) still shows it on screen - off and empty
+		// until it is filled in, and saved with the rest on the next Apply.
+		for (String id : new String[] { Notify.LIST_ERROR, Notify.LIST_MONITOR, Notify.LIST_TRANSFER })
+		{
+			if (result.containsKey(id) == false)
+			{
+				DistributionRecord ddata = new DistributionRecord();
+				ddata.listId = id;
+				ddata.enabled = "false";
+				ddata.maxFrequencyMins = 0L;
+				ddata.addressList = "";
+				result.put(id, ddata);
+			}
 		}
 
 		return result;
