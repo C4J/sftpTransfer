@@ -280,7 +280,7 @@ public class EmailThread extends Thread
 
 		Session session;
 
-		if (String.valueOf(smtp.get("mail.smtp.auth")).toLowerCase().equals("true"))
+		if (String.valueOf(smtp.get("mail.smtp.auth")).trim().toLowerCase().equals("true"))
 		{
 			logger.debug("Email authentication required");
 
@@ -339,7 +339,8 @@ public class EmailThread extends Thread
 
 	/**
 	 * The property rows as Jakarta Mail properties. A row whose Enable box is
-	 * unticked is left out; a row with no flag at all (older file) is kept.
+	 * unticked is left out. (The reader gives a row with no enabled attribute
+	 * "false", so a hand-copied middleware4j row arrives unticked.)
 	 */
 	static Properties smtpPropertiesFrom(HashMap<String, EmailRecord> props)
 	{

@@ -143,6 +143,8 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_StatsEnabled_Common;
 	private JTextField4j fld_StatsTime_Common;
 	private JButton4j btn_TestEmail;
+	private JButton4j btn_AddEmailProperty;
+	private JButton4j btn_RemoveEmailProperty;
 	private JComboBox4j<String> comboBox_Authentication_Type_Common;
 	private JLabel4j_std messageLabel;
 
@@ -612,6 +614,31 @@ public class JFrameSFTPTransfer extends JFrame
 		});
 		email_Tab_Panel.add(btn_TestEmail);
 
+		// Rows for anything beyond the six required properties - picked from a catalogue or typed by name.
+		btn_AddEmailProperty = new JButton4j("Add Property");
+		btn_AddEmailProperty.setToolTipText("Add a mail property row - pick one from the list or type any name");
+		btn_AddEmailProperty.setBounds(162, 381, 150, 25);
+		btn_AddEmailProperty.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				addEmailProperty();
+			}
+		});
+		email_Tab_Panel.add(btn_AddEmailProperty);
+
+		btn_RemoveEmailProperty = new JButton4j("Remove Property");
+		btn_RemoveEmailProperty.setToolTipText("Remove an added mail property row - the required rows stay, untick Enable to leave one out");
+		btn_RemoveEmailProperty.setBounds(318, 381, 150, 25);
+		btn_RemoveEmailProperty.addActionListener(new ActionListener()
+		{
+			public void actionPerformed(ActionEvent e)
+			{
+				removeEmailProperty();
+			}
+		});
+		email_Tab_Panel.add(btn_RemoveEmailProperty);
+
 		// COMMON
 
 		JLabel4j_std lbl_Title_Common = new JLabel4j_std("Title");
@@ -928,7 +955,7 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_EmailEnable_Common.setBounds(0, 370, 149, 27);
 		sftp_common_Tab_Panel.add(lbl_EmailEnable_Common);
 
-		// DAILY STATISTICS EMAIL - to the Monitor list, once a day at HH:mm on this machine's clock.
+		// DAILY STATISTICS EMAIL - to the Monitor list, once a day at HH:mm UTC (not this machine's clock).
 
 		JLabel4j_std lbl_StatsEnable_Common = new JLabel4j_std("Daily Statistics Email");
 		lbl_StatsEnable_Common.setHorizontalAlignment(SwingConstants.TRAILING);
@@ -946,8 +973,13 @@ public class JFrameSFTPTransfer extends JFrame
 
 		fld_StatsTime_Common = new JTextField4j(5);
 		fld_StatsTime_Common.setBounds(395, 370, 50, 23);
-		fld_StatsTime_Common.setToolTipText("HH:mm, 24 hour, this machine's clock");
+		fld_StatsTime_Common.setToolTipText("HH:mm, 24 hour, UTC - not this machine's clock");
 		sftp_common_Tab_Panel.add(fld_StatsTime_Common);
+
+		JLabel4j_std lbl_StatsUTC_Common = new JLabel4j_std("UTC");
+		lbl_StatsUTC_Common.setBounds(450, 370, 40, 27);
+		lbl_StatsUTC_Common.setToolTipText("The time is UTC, so one setting means the same moment on every host");
+		sftp_common_Tab_Panel.add(lbl_StatsUTC_Common);
 
 		checkBx_StatsEnabled_Common.addItemListener(new ItemListener()
 		{
@@ -2822,17 +2854,12 @@ public class JFrameSFTPTransfer extends JFrame
 
 		panel_Email_Scrollable.removeAll();
 
-		for (HashMap.Entry<String, EmailRecord> entry : emailConfig.entrySet())
+		// Required rows first, then the Add catalogue, then the rest alphabetically - the map's own order changes from run to run.
+		for (String name : SettingUtil.sortedEmailPropertyNames(emailConfig.keySet()))
 		{
-			EmailPanel ped = new EmailPanel();
+			EmailRecord record = emailConfig.get(name);
 
-			ped.fld_Property.setText(entry.getKey());
-
-			ped.fld_Value.setText(entry.getValue().value);
-			ped.fld_Encrypted.setSelected(Boolean.valueOf(entry.getValue().encrypted));
-			ped.fld_Enabled.setSelected(Boolean.valueOf(entry.getValue().enabled));
-
-			panel_Email_Scrollable.add(ped);
+			panel_Email_Scrollable.add(newEmailPanel(name, record.value, Boolean.valueOf(record.encrypted), Boolean.valueOf(record.enabled)));
 		}
 
 		panel_Distribution_Scrollable.removeAll();
@@ -3055,7 +3082,7 @@ public class JFrameSFTPTransfer extends JFrame
 		// Checked here, not in collectSettings(), which the remote folder browse also calls.
 		if (checkBx_StatsEnabled_Common.isSelected() && (StatsThread.parseTime(settingsCommon.statsReportTime.data, null) == null))
 		{
-			displayMessage("Settings NOT applied - Daily Statistics time must be HH:mm (e.g. 06:00).", messageType_ERROR);
+			displayMessage("Settings NOT applied - Daily Statistics time must be HH:mm UTC (e.g. 06:00).", messageType_ERROR);
 			return;
 		}
 
@@ -3132,6 +3159,171 @@ public class JFrameSFTPTransfer extends JFrame
 	 * Ignores the Email Notifications box, the queue and the frequency limit -
 	 * it is there to prove the credentials.
 	 */
+	private EmailPanel newEmailPanel(String name, String value, boolean encrypted, boolean enabled)
+	{
+		EmailPanel ped = new EmailPanel();
+
+		ped.fld_Property.setText(name);
+		ped.fld_Value.setText(value);
+		ped.fld_Encrypted.setSelected(encrypted);
+		ped.fld_Enabled.setSelected(enabled);
+
+		return ped;
+	}
+
+	/** The property names currently on the Email tab, in screen order. */
+	private ArrayList<String> emailPropertyNamesOnScreen()
+	{
+		ArrayList<String> result = new ArrayList<String>();
+
+		for (Component comp : panel_Email_Scrollable.getComponents())
+		{
+			if (comp instanceof EmailPanel)
+			{
+				result.add(((EmailPanel) comp).fld_Property.getText());
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * Adds a mail property row. The chooser lists the optional catalogue minus
+	 * what is already on screen, and accepts any typed name. The new row is
+	 * enabled with the catalogue's suggested value (blank for a typed name) and
+	 * goes in its display position; Apply saves it like any other row.
+	 */
+	private void addEmailProperty()
+	{
+		ArrayList<String> present = emailPropertyNamesOnScreen();
+		ArrayList<String> choices = new ArrayList<String>();
+
+		for (String[] optional : SettingUtil.EMAIL_OPTIONAL_PROPERTIES)
+		{
+			if (present.contains(optional[0]) == false)
+			{
+				choices.add(optional[0]);
+			}
+		}
+
+		JComboBox<String> combo = new JComboBox<String>(choices.toArray(new String[0]));
+		combo.setEditable(true);
+		combo.setPrototypeDisplayValue("mail.smtp.socketFactory.fallback      ");
+
+		if (choices.isEmpty())
+		{
+			combo.setSelectedItem("");
+		}
+
+		Object[] message = { "Pick a property or type its name :", combo };
+
+		int answer = JOptionPane.showConfirmDialog(JFrameSFTPTransfer.this, message, "Add Property", JOptionPane.OK_CANCEL_OPTION, JOptionPane.QUESTION_MESSAGE, Common.icon_confirm);
+
+		if (answer != JOptionPane.OK_OPTION)
+		{
+			return;
+		}
+
+		String name = String.valueOf(combo.getEditor().getItem()).trim();
+
+		if (name.equals(""))
+		{
+			displayMessage("No property name given.", messageType_ERROR);
+			return;
+		}
+
+		// Mail property names are case-sensitive, so a differently cased copy would only be a dead row - refuse it too.
+		for (String existing : present)
+		{
+			if (existing.equalsIgnoreCase(name))
+			{
+				displayMessage("Property [" + existing + "] is already on screen.", messageType_ERROR);
+				return;
+			}
+		}
+
+		String value = "";
+
+		for (String[] optional : SettingUtil.EMAIL_OPTIONAL_PROPERTIES)
+		{
+			if (optional[0].equals(name))
+			{
+				value = optional[1];
+			}
+		}
+
+		// Insert at the row's display position so the list stays in catalogue order.
+		int index = 0;
+
+		for (String existing : present)
+		{
+			if (SettingUtil.sortedEmailPropertyNames(java.util.Arrays.asList(existing, name)).get(0).equals(existing))
+			{
+				index++;
+			}
+		}
+
+		EmailPanel ped = newEmailPanel(name, value, false, true);
+
+		panel_Email_Scrollable.add(ped, index);
+		panel_Email_Scrollable.revalidate();
+		panel_Email_Scrollable.repaint();
+
+		wireChangeListeners();
+		refreshSettingsButtons();
+
+		ped.fld_Value.requestFocusInWindow();
+		displayMessage("Property [" + name + "] added - fill in the value and Apply.", messageType_INFO);
+	}
+
+	/**
+	 * Removes an added mail property row. The six required rows are never
+	 * offered (they would be seeded straight back); untick Enable to leave one
+	 * out of the mail session instead.
+	 */
+	private void removeEmailProperty()
+	{
+		ArrayList<String> removable = new ArrayList<String>();
+
+		for (String name : emailPropertyNamesOnScreen())
+		{
+			if (SettingUtil.isRequiredEmailProperty(name) == false)
+			{
+				removable.add(name);
+			}
+		}
+
+		if (removable.isEmpty())
+		{
+			displayMessage("Only the required properties are on screen - untick Enable to leave one out.", messageType_ERROR);
+			return;
+		}
+
+		Object choice = JOptionPane.showInputDialog(JFrameSFTPTransfer.this, "Remove which property ?", "Remove Property", JOptionPane.QUESTION_MESSAGE, Common.icon_confirm, removable.toArray(), removable.get(0));
+
+		if (choice == null)
+		{
+			return;
+		}
+
+		String name = choice.toString();
+
+		for (Component comp : panel_Email_Scrollable.getComponents())
+		{
+			if ((comp instanceof EmailPanel) && ((EmailPanel) comp).fld_Property.getText().equals(name))
+			{
+				panel_Email_Scrollable.remove(comp);
+				break;
+			}
+		}
+
+		panel_Email_Scrollable.revalidate();
+		panel_Email_Scrollable.repaint();
+
+		refreshSettingsButtons();
+		displayMessage("Property [" + name + "] removed - Apply to save.", messageType_INFO);
+	}
+
 	private void sendTestEmail()
 	{
 		commitSpinnerEdits();

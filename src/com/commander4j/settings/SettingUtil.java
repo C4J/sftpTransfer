@@ -44,6 +44,94 @@ public class SettingUtil
 	public static final String[] CONFIG_FILES = { "sftp_common.xml", "sftp_put.xml", "sftp_get.xml", "email_properties.xml", "email_distribution_properties.xml", "jsch_properties.xml" };
 
 	/**
+	 * The mail properties a send cannot do without - the four the code reads by
+	 * name (auth, user, password, from) plus host and port. Rows for these are
+	 * seeded off and empty when a file lacks them, so they are always on screen
+	 * and cannot be removed from the Email tab (an unticked row is simply not
+	 * passed to the mail session). Also the display order of the first rows.
+	 */
+	public static final String[] EMAIL_REQUIRED_PROPERTIES = { "mail.smtp.host", "mail.smtp.port", "mail.smtp.from", "mail.smtp.auth", "mail.smtp.user", "mail.smtp.password" };
+
+	/**
+	 * Other Jakarta Mail SMTP properties worth offering from the Email tab's Add
+	 * button, in display order, each with the value the chooser pre-fills. Not
+	 * seeded: an install only gets them when someone adds them, and the row can
+	 * be removed again. Anything else can still be typed in by name.
+	 */
+	public static final String[][] EMAIL_OPTIONAL_PROPERTIES = {
+			{ "mail.smtp.starttls.enable", "true" },
+			{ "mail.smtp.starttls.required", "false" },
+			{ "mail.smtp.ssl.enable", "false" },
+			{ "mail.smtp.ssl.trust", "" },
+			{ "mail.smtp.ssl.protocols", "TLSv1.2 TLSv1.3" },
+			{ "mail.smtp.socketFactory.class", "javax.net.ssl.SSLSocketFactory" },
+			{ "mail.smtp.socketFactory.port", "465" },
+			{ "mail.smtp.socketFactory.fallback", "true" },
+			{ "mail.smtp.connectiontimeout", "20000" },
+			{ "mail.smtp.timeout", "20000" },
+			{ "mail.smtp.writetimeout", "20000" },
+			{ "mail.smtp.localhost", "" },
+			{ "mail.mime.charset", "utf-8" },
+			{ "mail.debug", "false" } };
+
+	/** True for a property the Email tab always shows and never removes. */
+	public static boolean isRequiredEmailProperty(String name)
+	{
+		for (String required : EMAIL_REQUIRED_PROPERTIES)
+		{
+			if (required.equals(name))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Position of a property in the Email tab: required rows first in their
+	 * own order, then the optional catalogue in its order, then anything else
+	 * alphabetically after them.
+	 */
+	public static int emailPropertyRank(String name)
+	{
+		for (int i = 0; i < EMAIL_REQUIRED_PROPERTIES.length; i++)
+		{
+			if (EMAIL_REQUIRED_PROPERTIES[i].equals(name))
+			{
+				return i;
+			}
+		}
+		for (int i = 0; i < EMAIL_OPTIONAL_PROPERTIES.length; i++)
+		{
+			if (EMAIL_OPTIONAL_PROPERTIES[i][0].equals(name))
+			{
+				return EMAIL_REQUIRED_PROPERTIES.length + i;
+			}
+		}
+		return Integer.MAX_VALUE;
+	}
+
+	/** The property names in Email tab order (see emailPropertyRank). */
+	public static java.util.List<String> sortedEmailPropertyNames(java.util.Collection<String> names)
+	{
+		java.util.ArrayList<String> result = new java.util.ArrayList<String>(names);
+		java.util.Collections.sort(result, new java.util.Comparator<String>()
+		{
+			public int compare(String a, String b)
+			{
+				int ra = emailPropertyRank(a);
+				int rb = emailPropertyRank(b);
+				if (ra != rb)
+				{
+					return Integer.compare(ra, rb);
+				}
+				return a.compareTo(b);
+			}
+		});
+		return result;
+	}
+
+	/**
 	 * Parses each of the six settings files without reading any settings from
 	 * them. The readers return defaults when a file is missing or damaged,
 	 * which is fine at start-up but not for a reload into running threads -
@@ -1068,6 +1156,20 @@ public class SettingUtil
 		{
 			e.printStackTrace();
 		}
+
+		// The properties a send cannot do without always appear, so a file that lacks one
+		// (hand-copied from middleware4j, or trimmed by mistake) still shows it on screen - off
+		// and empty until it is filled in and ticked, and saved with the rest on the next
+		// Apply. An unticked row is not passed to the mail session, so this changes nothing
+		// for an existing install.
+		for (String name : EMAIL_REQUIRED_PROPERTIES)
+		{
+			if (result.containsKey(name) == false)
+			{
+				result.put(name, new EmailRecord(name, "", name.equals("mail.smtp.password"), false));
+			}
+		}
+
 		return result;
 	}
 
@@ -1241,15 +1343,17 @@ public class SettingUtil
 
 			doc.appendChild(rootElement);
 
-			for (HashMap.Entry<String, EmailRecord> entry : emailConfig.entrySet())
+			// Written in Email tab order (required, catalogue, then the rest) so the file reads like the screen.
+			for (String name : sortedEmailPropertyNames(emailConfig.keySet()))
 			{
+				EmailRecord record = emailConfig.get(name);
 
 				Element propertyElement = doc.createElement("property");
 
-				propertyElement.setAttribute("name", entry.getKey());
-				propertyElement.setAttribute("encrypted", entry.getValue().encrypted);
-				propertyElement.setAttribute("enabled", entry.getValue().enabled);
-				propertyElement.setAttribute("value", cipher.conditionalEncrypt(entry.getValue().value, entry.getValue().encrypted));
+				propertyElement.setAttribute("name", name);
+				propertyElement.setAttribute("encrypted", record.encrypted);
+				propertyElement.setAttribute("enabled", record.enabled);
+				propertyElement.setAttribute("value", cipher.conditionalEncrypt(record.value, record.encrypted));
 
 				configElement.appendChild(propertyElement);
 

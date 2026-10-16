@@ -44,7 +44,7 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "6.12";
+	public static String version = "6.14";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;

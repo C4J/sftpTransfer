@@ -2,6 +2,7 @@ package com.commander4j.thread;
 
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -14,7 +15,8 @@ import com.commander4j.sftp.Start;
 
 /**
  * Sends the daily statistics email to the Monitor list at the configured
- * time of day (this machine's clock), once per day, and zeroes the counters.
+ * time of day in UTC (not this machine's clock, so one setting means the
+ * same moment on every host), once per day, and zeroes the counters.
  * Its own thread rather than a job of the email thread, because that thread
  * can sit inside one SMTP send for as long as the mail server takes, and
  * only takes new settings when its queue is empty.
@@ -73,16 +75,16 @@ public class StatsThread extends Thread
 		reportTime = parseTime(common.statsReportTime.data, DEFAULT_TIME);
 
 		// A start (or a settings change) after today's time has passed must not send a report for an empty period.
-		if (LocalTime.now().isBefore(reportTime))
+		if (LocalTime.now(ZoneOffset.UTC).isBefore(reportTime))
 		{
 			lastRunDate = null;
 		}
 		else
 		{
-			lastRunDate = LocalDate.now();
+			lastRunDate = LocalDate.now(ZoneOffset.UTC);
 		}
 
-		jcmd.writeToSystemLog("Daily statistics email " + (enabled ? "at " + reportTime.format(TIME_FORMAT) : "off"), JLogPanel.INFO);
+		jcmd.writeToSystemLog("Daily statistics email " + (enabled ? "at " + reportTime.format(TIME_FORMAT) + " UTC" : "off"), JLogPanel.INFO);
 	}
 
 	public void run()
@@ -101,9 +103,9 @@ public class StatsThread extends Thread
 
 			if (enabled)
 			{
-				LocalDate today = LocalDate.now();
+				LocalDate today = LocalDate.now(ZoneOffset.UTC);
 
-				if ((today.equals(lastRunDate) == false) && (LocalTime.now().isBefore(reportTime) == false))
+				if ((today.equals(lastRunDate) == false) && (LocalTime.now(ZoneOffset.UTC).isBefore(reportTime) == false))
 				{
 					lastRunDate = today;
 

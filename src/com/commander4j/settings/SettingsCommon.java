@@ -12,7 +12,7 @@ public class SettingsCommon
 	public SettingData webEnabled = new SettingData("false","false");
 	public SettingData webPort = new SettingData("","false");
 
-	// Daily statistics email to the Monitor list; the time is HH:mm on this machine's clock.
+	// Daily statistics email to the Monitor list; the time is HH:mm in UTC (not this machine's clock).
 	// Both absent from a config written before the setting existed = off, 06:00.
 	public SettingData statsReportEnabled = new SettingData("false","false");
 	public SettingData statsReportTime = new SettingData("06:00","false");

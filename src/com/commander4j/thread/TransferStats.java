@@ -2,7 +2,7 @@ package com.commander4j.thread;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -95,7 +95,7 @@ public final class TransferStats
 	public static String[] reportLines(Snapshot s)
 	{
 		return new String[] {
-				"Period : " + stamp(s.from) + " to " + stamp(s.to),
+				"Period : " + stamp(s.from) + " to " + stamp(s.to) + " UTC",
 				"Put files sent     : " + s.putFiles,
 				"Put bytes sent     : " + JFormat.bytes(s.putBytes),
 				"Put failures       : " + s.putFailures,
@@ -106,8 +106,9 @@ public final class TransferStats
 				"Errors emailed     : " + s.errorsEmailed };
 	}
 
+	/** UTC, matching the schedule; the Period line says so. */
 	private static String stamp(Instant i)
 	{
-		return LocalDateTime.ofInstant(i, ZoneId.systemDefault()).format(STAMP);
+		return LocalDateTime.ofInstant(i, ZoneOffset.UTC).format(STAMP);
 	}
 }
