@@ -440,6 +440,12 @@ public class SettingUtil
 							// The screen parses this at start-up, so a blank element must not reach it.
 							if (result.stabilitySeconds.data.equals("")) result.stabilitySeconds.data = "5";
 							break;
+						case "stabilityRetries":
+							result.stabilityRetries.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.stabilityRetries.encrypted = encrypted;
+							// Missing from an older file = the field default of 5; a blank element must not reach the screen either.
+							if (result.stabilityRetries.data.equals("")) result.stabilityRetries.data = "5";
+							break;
 						case "backupEnabled":
 							result.backupEnabled.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
 							result.backupEnabled.encrypted = encrypted;
@@ -591,6 +597,12 @@ public class SettingUtil
 							result.stabilitySeconds.encrypted = encrypted;
 							// The screen parses this at start-up, so a blank element must not reach it.
 							if (result.stabilitySeconds.data.equals("")) result.stabilitySeconds.data = "5";
+							break;
+						case "stabilityRetries":
+							result.stabilityRetries.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
+							result.stabilityRetries.encrypted = encrypted;
+							// Missing from an older file = the field default of 5; a blank element must not reach the screen either.
+							if (result.stabilityRetries.data.equals("")) result.stabilityRetries.data = "5";
 							break;
 						case "pollFrequencySeconds":
 							result.pollFrequencySeconds.data = cipher.conditionalDecrypt(child.getTextContent().trim(), encrypted);
@@ -889,6 +901,11 @@ public class SettingUtil
 			stabilitySeconds.setAttribute("encrypted", settings.stabilitySeconds.encrypted);
 			settingsElement.appendChild(stabilitySeconds);
 
+			Element stabilityRetries = (Element) doc.createElement("stabilityRetries");
+			stabilityRetries.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityRetries.data, settings.stabilityRetries.encrypted)));
+			stabilityRetries.setAttribute("encrypted", settings.stabilityRetries.encrypted);
+			settingsElement.appendChild(stabilityRetries);
+
 			Element backupEnabled = (Element) doc.createElement("backupEnabled");
 			backupEnabled.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.backupEnabled.data, settings.backupEnabled.encrypted)));
 			backupEnabled.setAttribute("encrypted", settings.backupEnabled.encrypted);
@@ -1027,6 +1044,11 @@ public class SettingUtil
 			stabilitySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilitySeconds.data, settings.stabilitySeconds.encrypted)));
 			stabilitySeconds.setAttribute("encrypted", settings.stabilitySeconds.encrypted);
 			settingsElement.appendChild(stabilitySeconds);
+
+			Element stabilityRetries = (Element) doc.createElement("stabilityRetries");
+			stabilityRetries.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.stabilityRetries.data, settings.stabilityRetries.encrypted)));
+			stabilityRetries.setAttribute("encrypted", settings.stabilityRetries.encrypted);
+			settingsElement.appendChild(stabilityRetries);
 
 			Element pollFrequencySeconds = (Element) doc.createElement("pollFrequencySeconds");
 			pollFrequencySeconds.appendChild(doc.createTextNode(cipher.conditionalEncrypt(settings.pollFrequencySeconds.data, settings.pollFrequencySeconds.encrypted)));

@@ -2,7 +2,9 @@ package com.commander4j.email;
 
 import java.net.InetAddress;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.List;
 
 import com.commander4j.email.core.Email;
@@ -91,21 +93,189 @@ public final class Notify
 		return "SFTP Transfer " + Start.version + " " + event + " for [" + t + "] on " + host();
 	}
 
-	/** The body every email starts with, before the event's own lines. */
+	/**
+	 * The body of every email: an HTML table with the labels in one column
+	 * and the values in the other. The standard rows (event, title, host,
+	 * mode, time) come first, then the event's own lines. A detail line is
+	 * "Label : value"; a line with no " : " spans both columns as plain text;
+	 * a line starting with white space belongs to the row above (a file under
+	 * the "Files :" heading); a blank line is a short gap. Everything is
+	 * escaped, so an odd file name or exception message cannot break the
+	 * layout. A few empty paragraphs follow the table to keep a gap between
+	 * our text and any disclaimer a corporate mail system appends.
+	 */
 	public static String body(String event, String... detail)
 	{
-		StringBuilder b = new StringBuilder();
-		b.append("Event : ").append(event).append('\n');
-		b.append("Title : ").append(title).append('\n');
-		b.append("Host  : ").append(host()).append('\n');
-		b.append("Mode  : ").append(Start.gui == null ? "service" : "desktop").append('\n');
-		b.append("Time  : ").append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append('\n');
+		ArrayList<String> lines = new ArrayList<String>();
+		lines.add("Event : " + event);
+		lines.add("Title : " + title);
+		lines.add("Host : " + host());
+		lines.add("Mode : " + (Start.gui == null ? "service" : "desktop"));
+		// UTC, like the daily statistics schedule, so the same moment reads the same from every host.
+		lines.add("Time : " + LocalDateTime.now(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) + " UTC");
 
-		for (String line : detail)
+		if ((detail != null) && (detail.length > 0))
 		{
-			if (line != null)
+			lines.add("");
+
+			for (String line : detail)
 			{
-				b.append(line).append('\n');
+				if (line != null)
+				{
+					lines.add(line);
+				}
+			}
+		}
+
+		return html(lines);
+	}
+
+	private static final String FONT = "font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:18px;";
+	private static final String LABEL_STYLE = FONT + "color:#555555;padding:3px 16px 3px 0;vertical-align:top;white-space:nowrap;";
+	private static final String VALUE_STYLE = FONT + "color:#111111;padding:3px 0;vertical-align:top;word-break:break-all;";
+	private static final String TEXT_STYLE = FONT + "color:#111111;padding:3px 0;";
+	private static final String MONO = "font-family:Consolas,Menlo,'Courier New',monospace;font-size:12px;";
+
+	/**
+	 * Paths, file names and server messages read better in a fixed-width
+	 * face; counts, sizes and host names stay in the body face. Decided from
+	 * the value, not the label, so the daily statistics counts do not change
+	 * face because a label happens to say "files".
+	 */
+	private static boolean monospaced(String label, String value)
+	{
+		return value.contains("/") || value.contains("\\") || label.equalsIgnoreCase("Reason");
+	}
+
+	/** The detail lines as the HTML table. Package-private so a probe can render it without a mail session. */
+	static String html(List<String> lines)
+	{
+		StringBuilder b = new StringBuilder();
+		b.append("<html><body style=\"margin:0;padding:12px;background-color:#ffffff;\">\n");
+		b.append("<table cellspacing=\"0\" cellpadding=\"0\" border=\"0\" style=\"border-collapse:collapse;\">\n");
+
+		boolean first = true;
+		StringBuilder continuation = null;
+		// False while the value cell is still empty (a "Files :" heading), so the first file does not start with a line break.
+		boolean continuationStarted = false;
+
+		for (int i = 0; i < lines.size(); i++)
+		{
+			String line = lines.get(i);
+
+			if ((line.length() > 0) && Character.isWhitespace(line.charAt(0)) && (continuation != null))
+			{
+				// A line under a heading such as "Files :" - one line of the value cell above.
+				String text = line.trim();
+
+				if (continuationStarted)
+				{
+					continuation.append("<br>");
+				}
+
+				continuation.append("<span style=\"").append(MONO).append("\">").append(text.startsWith("...") ? "<i>" + escape(text) + "</i>" : escape(text)).append("</span>");
+				continuationStarted = true;
+				continue;
+			}
+
+			if (continuation != null)
+			{
+				b.append(continuation).append("</td></tr>\n");
+				continuation = null;
+			}
+
+			if (line.trim().isEmpty())
+			{
+				b.append("<tr><td colspan=\"2\" style=\"height:8px;font-size:4px;line-height:4px;\">&nbsp;</td></tr>\n");
+				continue;
+			}
+
+			int sep = line.indexOf(" : ");
+
+			if ((sep < 0) && line.trim().endsWith(":"))
+			{
+				// "Files :" - a heading whose value is the indented lines which follow.
+				sep = line.lastIndexOf(':');
+			}
+
+			if (sep < 0)
+			{
+				b.append("<tr><td colspan=\"2\" style=\"").append(TEXT_STYLE).append("\">").append(escape(line.trim())).append("</td></tr>\n");
+				continue;
+			}
+
+			String label = line.substring(0, sep).trim();
+			String value = line.substring(sep + 1).replaceFirst("^:", "").trim();
+
+			String valueStyle = VALUE_STYLE + (monospaced(label, value) ? MONO : "");
+			String valueHtml = escape(value);
+
+			if (first)
+			{
+				// The event name is the one thing the reader wants first.
+				valueHtml = "<b>" + valueHtml + "</b>";
+				first = false;
+			}
+
+			b.append("<tr><td style=\"").append(LABEL_STYLE).append("\">").append(escape(label)).append("</td>");
+			b.append("<td style=\"").append(valueStyle).append("\">").append(valueHtml);
+
+			// The row stays open in case indented lines follow it.
+			continuation = new StringBuilder();
+			continuationStarted = (value.isEmpty() == false);
+		}
+
+		if (continuation != null)
+		{
+			b.append(continuation).append("</td></tr>\n");
+		}
+
+		b.append("</table>\n");
+
+		// A gap before anything the receiving mail system appends. Outlook collapses repeated <br>, so empty paragraphs are used.
+		for (int i = 0; i < 4; i++)
+		{
+			b.append("<p style=\"").append(FONT).append("margin:0;\">&nbsp;</p>\n");
+		}
+
+		b.append("</body></html>");
+
+		return b.toString();
+	}
+
+	/** HTML-escaped, with a line break kept as one - an exception message can run to more than one line. */
+	private static String escape(String text)
+	{
+		StringBuilder b = new StringBuilder(text.length() + 16);
+
+		text = text.replace("\r", "");
+
+		for (int i = 0; i < text.length(); i++)
+		{
+			char c = text.charAt(i);
+
+			switch (c)
+			{
+			case '&':
+				b.append("&amp;");
+				break;
+			case '<':
+				b.append("&lt;");
+				break;
+			case '>':
+				b.append("&gt;");
+				break;
+			case '"':
+				b.append("&quot;");
+				break;
+			case '\'':
+				b.append("&#39;");
+				break;
+			case '\n':
+				b.append("<br>");
+				break;
+			default:
+				b.append(c);
 			}
 		}
 

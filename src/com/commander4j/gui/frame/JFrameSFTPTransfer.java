@@ -168,13 +168,13 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_Sync_Put;
 	// Hint beside Sync Mode - says what the box does ticked AND what the default (move) does unticked.
 	private JLabel4j_std lbl_SyncHint_Put;
-	private static final String SYNC_HINT_PUT = "Copy new or changed files and leave the local files in place";
-	private static final String MOVE_HINT_PUT = "Move every file, deleting the local copy once it has been sent";
+	private static final String SYNC_HINT_PUT = "On = copy and keep local files. Off = move and delete them";
 	private JCheckBox4j checkBx_SyncDelete_Put;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Put;
 	private JCheckBox4j checkBx_Stability_Put;
 	private JCheckBox4j checkBx_OverwriteNewer_Put;
 	private JSpinner4j spinner_StabilitySeconds_Put;
+	private JSpinner4j spinner_StabilityRetries_Put;
 	private JButton4j btn_BackupFolderSelect_Put;
 
 	private JTextField4j fld_Title_Get;
@@ -187,13 +187,13 @@ public class JFrameSFTPTransfer extends JFrame
 	private JCheckBox4j checkBx_SubFolders_Get;
 	private JCheckBox4j checkBx_Sync_Get;
 	private JLabel4j_std lbl_SyncHint_Get;
-	private static final String SYNC_HINT_GET = "Copy new or changed files and leave the remote files in place";
-	private static final String MOVE_HINT_GET = "Move every file, deleting the remote copy once it has been received";
+	private static final String SYNC_HINT_GET = "On = copy and keep remote files. Off = move and delete them";
 	private JCheckBox4j checkBx_SyncDelete_Get;
 	private JCheckBox4j checkBx_SyncDeleteFolders_Get;
 	private JCheckBox4j checkBx_Stability_Get;
 	private JCheckBox4j checkBx_OverwriteNewer_Get;
 	private JSpinner4j spinner_StabilitySeconds_Get;
+	private JSpinner4j spinner_StabilityRetries_Get;
 
 	// private JCheckBox chckbx_PrivateKeyPassword = new JCheckBox("");
 	private JCheckBox4j chckbx_PrivateKeyPassword_Common;
@@ -268,6 +268,11 @@ public class JFrameSFTPTransfer extends JFrame
 	// Fingerprints of the settings form as last saved to disk and as last handed to the threads.
 	// Apply, Save and Reload are only enabled while the form differs from the matching one.
 	private String savedFingerprint = null;
+
+	// Poll Frequency range in seconds: a floor of 1 (0 would poll without pause) up to one day, so an
+	// interval of several hours can be typed directly (4 hours = 14400).
+	private static final int POLL_FREQUENCY_MIN_SECONDS = 1;
+	private static final int POLL_FREQUENCY_MAX_SECONDS = 86400;
 	// Weak so that row panels replaced by a reload can be collected.
 	private Set<Component> changeWiredComponents = Collections.newSetFromMap(new WeakHashMap<Component, Boolean>());
 
@@ -1009,6 +1014,7 @@ public class JFrameSFTPTransfer extends JFrame
 		SpinnerNumberModel webPortModel_Common = new SpinnerNumberModel(WebServer.parsePort(settingsCommon.webPort.data, WebServer.DEFAULT_PORT), 1, 65535, 1);
 
 		spinner_WebPort_Common = new JSpinner4j();
+		spinner_WebPort_Common.setName("Web Port");
 		spinner_WebPort_Common.setBounds(240, 430, 80, 23);
 		spinner_WebPort_Common.setModel(webPortModel_Common);
 		// Plain digits - the default editor would show 8080 as 8,080.
@@ -1102,17 +1108,21 @@ public class JFrameSFTPTransfer extends JFrame
 		SpinnerNumberModel backupRetentionModel_Put =  new SpinnerNumberModel(backupRetention_Put,0,365,1);
 
 		spinner_BackupRetention_Put = new JSpinner4j();
+		spinner_BackupRetention_Put.setName("Put Backup Retention");
 		spinner_BackupRetention_Put.setBounds(161, 160, 67, 23);
 		sftp_put_Tab_Panel.add(spinner_BackupRetention_Put);
 		spinner_BackupRetention_Put.setModel(backupRetentionModel_Put);
 
-		int pollingFrequency_Put = Integer.parseInt(settingsPut.pollFrequencySeconds.data);
-		SpinnerNumberModel pollingFrequencyModel_Put =  new SpinnerNumberModel(pollingFrequency_Put,0,365,1);
+		SpinnerNumberModel pollingFrequencyModel_Put = pollFrequencyModel(settingsPut.pollFrequencySeconds.data);
 
 		spinner_PollFrequency_Put = new JSpinner4j();
-		spinner_PollFrequency_Put.setBounds(161, 190, 67, 23);
+		spinner_PollFrequency_Put.setName("Put Poll Frequency");
+		spinner_PollFrequency_Put.setBounds(161, 190, 80, 23);
 		sftp_put_Tab_Panel.add(spinner_PollFrequency_Put);
 		spinner_PollFrequency_Put.setModel(pollingFrequencyModel_Put);
+		// Plain digits - the default editor would show 14400 as 14,400.
+		spinner_PollFrequency_Put.setEditor(new JSpinner.NumberEditor(spinner_PollFrequency_Put, "#"));
+		spinner_PollFrequency_Put.setToolTipText("Seconds between checks of the local folder - " + POLL_FREQUENCY_MIN_SECONDS + " to " + POLL_FREQUENCY_MAX_SECONDS + " (one day)");
 
 		JLabel4j_std lbl_PollFrequency_Put = new JLabel4j_std("Poll Frequency");
 		lbl_PollFrequency_Put.setHorizontalAlignment(SwingConstants.TRAILING);
@@ -1120,7 +1130,7 @@ public class JFrameSFTPTransfer extends JFrame
 		sftp_put_Tab_Panel.add(lbl_PollFrequency_Put);
 
 		JLabel4j_std lbl_PollFrequencyUnit_Put = new JLabel4j_std("Seconds");
-		lbl_PollFrequencyUnit_Put.setBounds(240, 190, 63, 27);
+		lbl_PollFrequencyUnit_Put.setBounds(250, 190, 63, 27);
 		sftp_put_Tab_Panel.add(lbl_PollFrequencyUnit_Put);
 
 		fld_RemoteFolder_Put = new JTextField4j();
@@ -1208,13 +1218,13 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_SyncDeleteFoldersHint_Put.setBounds(196, 400, 351, 27);
 		sftp_put_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Put);
 
-		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
+		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put);
 
 		ActionListener syncDeleteStateListener_Put = new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
+				setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put);
 				setPutBackupRowState();
 			}
 		};
@@ -1225,7 +1235,10 @@ public class JFrameSFTPTransfer extends JFrame
 
 		checkBx_Stability_Put = new JCheckBox4j("");
 		spinner_StabilitySeconds_Put = new JSpinner4j();
-		addStabilityRow(sftp_put_Tab_Panel, 430, checkBx_Stability_Put, spinner_StabilitySeconds_Put, settingsPut.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+		spinner_StabilitySeconds_Put.setName("Put Stability Check");
+		spinner_StabilityRetries_Put = new JSpinner4j();
+		spinner_StabilityRetries_Put.setName("Put Stability Retries");
+		addStabilityRow(sftp_put_Tab_Panel, 430, checkBx_Stability_Put, spinner_StabilitySeconds_Put, settingsPut.stabilitySeconds.data, spinner_StabilityRetries_Put, settingsPut.stabilityRetries.data, "Wait, then give a file still changing up to Retries more waits");
 
 		JButton4j btn_LocalFolderSelect_Put = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Put.addActionListener(new ActionListener()
@@ -1295,13 +1308,16 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_RemoteMask_Get.setBounds(6, 100, 143, 27);
 		sftp_get_Tab_Panel.add(lbl_RemoteMask_Get);
 
-		int pollingFrequency_Get = Integer.parseInt(settingsGet.pollFrequencySeconds.data);
-		SpinnerNumberModel pollingFrequencyModel_Get =  new SpinnerNumberModel(pollingFrequency_Get,0,365,1);
+		SpinnerNumberModel pollingFrequencyModel_Get = pollFrequencyModel(settingsGet.pollFrequencySeconds.data);
 
 		spinner_PollFrequency_Get = new JSpinner4j();
-		spinner_PollFrequency_Get.setBounds(161, 130, 67, 23);
+		spinner_PollFrequency_Get.setName("Get Poll Frequency");
+		spinner_PollFrequency_Get.setBounds(161, 130, 80, 23);
 		sftp_get_Tab_Panel.add(spinner_PollFrequency_Get);
 		spinner_PollFrequency_Get.setModel(pollingFrequencyModel_Get);
+		// Plain digits - the default editor would show 14400 as 14,400.
+		spinner_PollFrequency_Get.setEditor(new JSpinner.NumberEditor(spinner_PollFrequency_Get, "#"));
+		spinner_PollFrequency_Get.setToolTipText("Seconds between checks of the remote folder - " + POLL_FREQUENCY_MIN_SECONDS + " to " + POLL_FREQUENCY_MAX_SECONDS + " (one day)");
 
 		JLabel4j_std lbl_PollFrequency_Get = new JLabel4j_std("Poll Frequency");
 		lbl_PollFrequency_Get.setHorizontalAlignment(SwingConstants.TRAILING);
@@ -1310,7 +1326,7 @@ public class JFrameSFTPTransfer extends JFrame
 
 		JLabel4j_std lbl_PollFrequencyUnit_Get = new JLabel4j_std("Seconds");
 		lbl_PollFrequencyUnit_Get.setHorizontalAlignment(SwingConstants.LEADING);
-		lbl_PollFrequencyUnit_Get.setBounds(246, 130, 57, 27);
+		lbl_PollFrequencyUnit_Get.setBounds(250, 130, 57, 27);
 		sftp_get_Tab_Panel.add(lbl_PollFrequencyUnit_Get);
 
 		fld_Title_Get = new JTextField4j();
@@ -1407,13 +1423,13 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_SyncDeleteFoldersHint_Get.setBounds(196, 340, 351, 27);
 		sftp_get_Tab_Panel.add(lbl_SyncDeleteFoldersHint_Get);
 
-		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
+		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get);
 
 		ActionListener syncDeleteStateListener_Get = new ActionListener()
 		{
 			public void actionPerformed(ActionEvent e)
 			{
-				setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
+				setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get);
 			}
 		};
 
@@ -1423,7 +1439,10 @@ public class JFrameSFTPTransfer extends JFrame
 
 		checkBx_Stability_Get = new JCheckBox4j("");
 		spinner_StabilitySeconds_Get = new JSpinner4j();
-		addStabilityRow(sftp_get_Tab_Panel, 370, checkBx_Stability_Get, spinner_StabilitySeconds_Get, settingsGet.stabilitySeconds.data, "Wait, then skip a file whose size or time has changed");
+		spinner_StabilitySeconds_Get.setName("Get Stability Check");
+		spinner_StabilityRetries_Get = new JSpinner4j();
+		spinner_StabilityRetries_Get.setName("Get Stability Retries");
+		addStabilityRow(sftp_get_Tab_Panel, 370, checkBx_Stability_Get, spinner_StabilitySeconds_Get, settingsGet.stabilitySeconds.data, spinner_StabilityRetries_Get, settingsGet.stabilityRetries.data, "Wait, then give a file still changing up to Retries more waits");
 
 		JButton4j btn_LocalFolderSelect_Get = new JButton4j(Common.icon_select_folder);
 		btn_LocalFolderSelect_Get.addActionListener(new ActionListener()
@@ -2088,6 +2107,30 @@ public class JFrameSFTPTransfer extends JFrame
 		}
 	}
 
+	// Saved Poll Frequency text as a value the spinner can hold: unreadable text becomes the 10-second
+	// default and anything outside the range is pulled into it, so a hand-edited file neither fails the
+	// model's constructor (and the whole frame) nor sets a value the spinner would refuse on Apply.
+	private int pollFrequencySeconds(String savedSeconds)
+	{
+		int seconds;
+
+		try
+		{
+			seconds = Integer.parseInt(savedSeconds.trim());
+		}
+		catch (Exception ex)
+		{
+			seconds = 10;
+		}
+
+		return Math.max(POLL_FREQUENCY_MIN_SECONDS, Math.min(POLL_FREQUENCY_MAX_SECONDS, seconds));
+	}
+
+	private SpinnerNumberModel pollFrequencyModel(String savedSeconds)
+	{
+		return new SpinnerNumberModel(pollFrequencySeconds(savedSeconds), POLL_FREQUENCY_MIN_SECONDS, POLL_FREQUENCY_MAX_SECONDS, 1);
+	}
+
 	private void setKnownHostsState(boolean state)
 	{
 		fld_KnownHostsFile_Common.setEnabled(state);
@@ -2096,12 +2139,13 @@ public class JFrameSFTPTransfer extends JFrame
 	}
 
 	/**
-	 * The Stability Check row of a Put or Get tab: tick box, seconds spinner
-	 * (only live when ticked) and a hint. The thread waits that many seconds,
-	 * then leaves alone any file whose size or modified time has changed since
-	 * it was found.
+	 * The Stability Check row of a Put or Get tab: tick box, seconds spinner,
+	 * retries spinner (both only live when ticked) and a hint. The thread waits
+	 * that many seconds, then gives any file whose size or modified time has
+	 * changed since it was found up to Retries more waits before leaving it
+	 * for the next poll.
 	 */
-	private void addStabilityRow(JPanel panel, int y, JCheckBox4j check, JSpinner4j spinner, String seconds, String hint)
+	private void addStabilityRow(JPanel panel, int y, JCheckBox4j check, JSpinner4j spinner, String seconds, JSpinner4j retries, String retriesValue, String hint)
 	{
 		JLabel4j_std lbl_Stability = new JLabel4j_std("Stability Check");
 		lbl_Stability.setHorizontalAlignment(SwingConstants.TRAILING);
@@ -2122,6 +2166,16 @@ public class JFrameSFTPTransfer extends JFrame
 		lbl_Unit.setBounds(270, y, 63, 27);
 		panel.add(lbl_Unit);
 
+		retries.setBounds(340, y, 67, 23);
+		retries.setModel(new SpinnerNumberModel(stabilityRetries(retriesValue), 0, 99, 1));
+		retries.setToolTipText("How many more times to wait for a file that is still changing before leaving it for the next poll (0 = none)");
+		retries.setEnabled(check.isSelected());
+		panel.add(retries);
+
+		JLabel4j_std lbl_Retries = new JLabel4j_std("Retries");
+		lbl_Retries.setBounds(414, y, 63, 27);
+		panel.add(lbl_Retries);
+
 		// The hint sits on the row beneath, so the tab stays narrow.
 		JLabel4j_std lbl_Hint = new JLabel4j_std(hint);
 		lbl_Hint.setFont(Common.font_italic);
@@ -2133,6 +2187,7 @@ public class JFrameSFTPTransfer extends JFrame
 			public void itemStateChanged(ItemEvent e)
 			{
 				spinner.setEnabled(check.isSelected());
+				retries.setEnabled(check.isSelected());
 			}
 		});
 	}
@@ -2154,11 +2209,25 @@ public class JFrameSFTPTransfer extends JFrame
 		return Math.max(1, Math.min(3600, result));
 	}
 
-	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders, JCheckBox4j overwriteNewer, JLabel4j_std syncHint, String syncText, String moveText)
+	/** The saved retries value within the spinner's range; 5 if it is not a number. */
+	private static int stabilityRetries(String value)
 	{
-		// The hint describes the mode in force: unticked is the original move behaviour.
-		syncHint.setText(sync.isSelected() ? syncText : moveText);
+		int result = 5;
 
+		try
+		{
+			result = Integer.parseInt(value.trim());
+		}
+		catch (Exception e)
+		{
+			result = 5;
+		}
+
+		return Math.max(0, Math.min(99, result));
+	}
+
+	private void setSyncDeleteState(JCheckBox4j subFolders, JCheckBox4j sync, JCheckBox4j syncDelete, JCheckBox4j syncDeleteFolders, JCheckBox4j overwriteNewer)
+	{
 		// Overwrite Newer only applies to a sync. Its value is kept while sync is off - it is inert then, and comes back as it was.
 		overwriteNewer.setEnabled(sync.isSelected());
 
@@ -2375,6 +2444,7 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsPut.overwriteNewer.data = String.valueOf(checkBx_OverwriteNewer_Put.isSelected());
 		settingsPut.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Put.isSelected());
 		settingsPut.stabilitySeconds.data = spinner_StabilitySeconds_Put.getValue().toString();
+		settingsPut.stabilityRetries.data = spinner_StabilityRetries_Put.getValue().toString();
 
 		settingsGet.enabled.data = String.valueOf(checkBx_Enabled_Get.isSelected());
 		settingsGet.remoteDir.data = fld_RemoteFolder_Get.getText();
@@ -2390,6 +2460,7 @@ public class JFrameSFTPTransfer extends JFrame
 		settingsGet.overwriteNewer.data = String.valueOf(checkBx_OverwriteNewer_Get.isSelected());
 		settingsGet.stabilityCheckEnabled.data = String.valueOf(checkBx_Stability_Get.isSelected());
 		settingsGet.stabilitySeconds.data = spinner_StabilitySeconds_Get.getValue().toString();
+		settingsGet.stabilityRetries.data = spinner_StabilityRetries_Get.getValue().toString();
 
 		// update email config and distribution lists from panel data
 		// here.
@@ -2809,7 +2880,7 @@ public class JFrameSFTPTransfer extends JFrame
 		fld_LocalMask_Put.setText(settingsPut.localFileMask.data);
 		fld_BackupFolder_Put.setText(settingsPut.backupDir.data);
 		spinner_BackupRetention_Put.setValue(Integer.parseInt(settingsPut.backupRetention.data));
-		spinner_PollFrequency_Put.setValue(Integer.parseInt(settingsPut.pollFrequencySeconds.data));
+		spinner_PollFrequency_Put.setValue(Integer.valueOf(pollFrequencySeconds(settingsPut.pollFrequencySeconds.data)));
 		fld_RemoteFolder_Put.setText(settingsPut.remoteDir.data);
 		fld_TempFileExtension_Put.setText(settingsPut.tempFileExtension.data);
 		checkBx_SubFolders_Put.setSelected(Boolean.valueOf(settingsPut.includeSubFolders.data));
@@ -2820,11 +2891,13 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Stability_Put.setSelected(Boolean.valueOf(settingsPut.stabilityCheckEnabled.data));
 		spinner_StabilitySeconds_Put.setValue(Integer.valueOf(stabilitySeconds(settingsPut.stabilitySeconds.data)));
 		spinner_StabilitySeconds_Put.setEnabled(checkBx_Stability_Put.isSelected());
+		spinner_StabilityRetries_Put.setValue(Integer.valueOf(stabilityRetries(settingsPut.stabilityRetries.data)));
+		spinner_StabilityRetries_Put.setEnabled(checkBx_Stability_Put.isSelected());
 
 		checkBx_Enabled_Get.setSelected(Boolean.valueOf(settingsGet.enabled.data));
 		fld_LocalFolder_Get.setText(settingsGet.localDir.data);
 		fld_Remote_Mask_Get.setText(settingsGet.remoteFileMask.data);
-		spinner_PollFrequency_Get.setValue(Integer.parseInt(settingsGet.pollFrequencySeconds.data));
+		spinner_PollFrequency_Get.setValue(Integer.valueOf(pollFrequencySeconds(settingsGet.pollFrequencySeconds.data)));
 		fld_Title_Get.setText(settingsGet.title.data);
 		fld_RemoteFolder_Get.setText(settingsGet.remoteDir.data);
 		fld_TempFileExtension_Get.setText(settingsGet.tempFileExtension.data);
@@ -2836,6 +2909,8 @@ public class JFrameSFTPTransfer extends JFrame
 		checkBx_Stability_Get.setSelected(Boolean.valueOf(settingsGet.stabilityCheckEnabled.data));
 		spinner_StabilitySeconds_Get.setValue(Integer.valueOf(stabilitySeconds(settingsGet.stabilitySeconds.data)));
 		spinner_StabilitySeconds_Get.setEnabled(checkBx_Stability_Get.isSelected());
+		spinner_StabilityRetries_Get.setValue(Integer.valueOf(stabilityRetries(settingsGet.stabilityRetries.data)));
+		spinner_StabilityRetries_Get.setEnabled(checkBx_Stability_Get.isSelected());
 
 		panel_Properties_Scrollable.removeAll();
 
@@ -2893,8 +2968,8 @@ public class JFrameSFTPTransfer extends JFrame
 		setPrivateKeyState(chckbx_checkPrivateKey_Common.isSelected());
 		setPrivateKeyPasswordState(chckbx_PrivateKeyPassword_Common.isSelected());
 		setKnownHostsState(chkbox_KnownHosts_Common.isSelected());
-		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put, lbl_SyncHint_Put, SYNC_HINT_PUT, MOVE_HINT_PUT);
-		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get, lbl_SyncHint_Get, SYNC_HINT_GET, MOVE_HINT_GET);
+		setSyncDeleteState(checkBx_SubFolders_Put, checkBx_Sync_Put, checkBx_SyncDelete_Put, checkBx_SyncDeleteFolders_Put, checkBx_OverwriteNewer_Put);
+		setSyncDeleteState(checkBx_SubFolders_Get, checkBx_Sync_Get, checkBx_SyncDelete_Get, checkBx_SyncDeleteFolders_Get, checkBx_OverwriteNewer_Get);
 		setPutBackupRowState();
 	}
 
@@ -3017,35 +3092,73 @@ public class JFrameSFTPTransfer extends JFrame
 
 	// Pushes a value typed into a spinner, but not confirmed with Enter, into the spinner's model.
 	// The toolbar buttons do not take the focus, so nothing else commits it before collectSettings.
-	private void commitSpinnerEdits()
+	// Returns the first spinner whose text was refused (unparseable or outside its range), with its
+	// text put back to the model's value so the screen shows what would be saved; null when all commit.
+	private JSpinner commitSpinnerEdits()
 	{
 		for (JPanel panel : settingsPanels())
 		{
-			commitSpinnerEdits(panel);
+			JSpinner rejected = commitSpinnerEdits(panel);
+
+			if (rejected != null)
+			{
+				return rejected;
+			}
 		}
+
+		return null;
 	}
 
-	private void commitSpinnerEdits(Container container)
+	private JSpinner commitSpinnerEdits(Container container)
 	{
 		for (Component comp : container.getComponents())
 		{
 			if (comp instanceof JSpinner)
 			{
+				JSpinner spinner = (JSpinner) comp;
+
 				try
 				{
-					((JSpinner) comp).commitEdit();
+					spinner.commitEdit();
 				}
 				catch (Exception ex)
 				{
-					// Unparseable text - the spinner keeps its last good value.
+					if (spinner.getEditor() instanceof JSpinner.DefaultEditor)
+					{
+						((JSpinner.DefaultEditor) spinner.getEditor()).getTextField().setValue(spinner.getValue());
+					}
+
+					return spinner;
 				}
 			}
 
 			if (comp instanceof Container)
 			{
-				commitSpinnerEdits((Container) comp);
+				JSpinner rejected = commitSpinnerEdits((Container) comp);
+
+				if (rejected != null)
+				{
+					return rejected;
+				}
 			}
 		}
+
+		return null;
+	}
+
+	// "Put Poll Frequency must be a whole number from 1 to 86400" - the spinner's own name and range.
+	private String spinnerRangeMessage(JSpinner spinner)
+	{
+		String name = (spinner.getName() == null) ? "A number field" : spinner.getName();
+
+		if (spinner.getModel() instanceof SpinnerNumberModel)
+		{
+			SpinnerNumberModel model = (SpinnerNumberModel) spinner.getModel();
+
+			return name + " must be a whole number from " + model.getMinimum() + " to " + model.getMaximum();
+		}
+
+		return name + " holds a value that cannot be used";
 	}
 
 	private boolean hasUnsavedChanges()
@@ -3076,7 +3189,26 @@ public class JFrameSFTPTransfer extends JFrame
 	 */
 	private void applyChanges()
 	{
-		commitSpinnerEdits();
+		JSpinner rejected = commitSpinnerEdits();
+
+		if (rejected != null)
+		{
+			displayMessage("Settings NOT applied - " + spinnerRangeMessage(rejected) + ".", messageType_ERROR);
+			refreshSettingsButtons();
+
+			// The caret belongs in the text box, not on the spinner shell.
+			if (rejected.getEditor() instanceof JSpinner.DefaultEditor)
+			{
+				((JSpinner.DefaultEditor) rejected.getEditor()).getTextField().requestFocusInWindow();
+			}
+			else
+			{
+				rejected.requestFocusInWindow();
+			}
+
+			return;
+		}
+
 		collectSettings();
 
 		// Checked here, not in collectSettings(), which the remote folder browse also calls.

@@ -44,7 +44,7 @@ public class Start
 
 	// Static variables;
 
-	public static String version = "6.14";
+	public static String version = "6.17";
 
 	public static TransferPUT transferPut;
 	public static TransferGET transferGet;
@@ -333,7 +333,6 @@ public class Start
 				webServer = null;
 			}
 
-			// Queued before the email thread is told to stop, so it goes out in the drain.
 			processingStateChanged(false, "shutdown");
 
 			transferPut.setRunMode(TransferPUT.Mode_SHUTDOWN);
@@ -344,8 +343,10 @@ public class Start
 
 			statsThread.shutdown();
 
-			emailthread.shutdown();
-
+			// The email thread is told to stop only once the others have ended, inside waitforServicesShutdown: a transfer
+			// thread stops at the next file boundary, which may be minutes into a large file, and the summary of the pass
+			// it was cut short in is queued only then. Stopped early, the email thread would drain the Stopped email and
+			// exit before that summary arrived.
 			waitforServicesShutdown();
 
 			// Released only now, so a desktop on this machine does not take over until the transfers have really stopped.
@@ -389,6 +390,9 @@ public class Start
 		{
 			wait.milliSec(100);
 		}
+
+		// Everything which can queue an email has now stopped - the queue is drained and the thread ends.
+		emailthread.shutdown();
 
 		while (emailthread.isAlive())
 		{

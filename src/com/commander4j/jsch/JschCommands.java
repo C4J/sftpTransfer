@@ -3,6 +3,7 @@ package com.commander4j.jsch;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -66,6 +67,16 @@ public class JschCommands
 	public String getLastError()
 	{
 		return lastError;
+	}
+
+	/**
+	 * JSch 2.28 deprecated the String forms of setPassword and addIdentity in
+	 * favour of byte arrays (UTF-8, as the String forms always were inside JSch).
+	 * A null setting gives null, which both methods take as "no password".
+	 */
+	private static byte[] utf8(String secret)
+	{
+		return (secret == null) ? null : secret.getBytes(StandardCharsets.UTF_8);
 	}
 
 	private static String reason(Exception e)
@@ -251,7 +262,7 @@ public class JschCommands
 					{
 						if (Boolean.valueOf(settingsCommon.privateKeyPasswordProtected.data) == true)
 						{
-							jsch.addIdentity(settingsCommon.privateKeyFile.data, settingsCommon.privateKeyPassword.data);
+							jsch.addIdentity(settingsCommon.privateKeyFile.data, utf8(settingsCommon.privateKeyPassword.data));
 						}
 						else
 						{
@@ -264,7 +275,7 @@ public class JschCommands
 
 				jschSession.setConfig(cfg);
 
-				jschSession.setPassword(settingsCommon.password.data);
+				jschSession.setPassword(utf8(settingsCommon.password.data));
 
 				writeToLog("Connecting to " + hostLabel() + " as " + settingsCommon.username.data, JLogPanel.NORMAL);
 

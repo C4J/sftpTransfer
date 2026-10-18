@@ -85,6 +85,9 @@ public class TransferGET extends Thread
 	private boolean localSafeFileMissing = false;
 	private boolean remoteSafeFileMissing = false;
 
+	// One "could not be listed" report per failure, not one per poll - like the safe file above.
+	private boolean remoteListingFailed = false;
+
 	// Why the last local step of a download failed (rename of the temporary file), for the email.
 	private String lastLocalError = "";
 
@@ -92,6 +95,15 @@ public class TransferGET extends Thread
 	private int receivedCount = 0;
 	private int failedCount = 0;
 	private int skippedCount = 0;
+
+	// Stability check: the folder being fetched listed again after the wait (and after each retry wait).
+	// Set per folder; sub-folders are only entered after a folder's file loop, so one field serves.
+	private HashMap<String, SftpATTRS> freshEntries = null;
+
+	// What checkStability found: the file can go, the file is left for the next poll, or the folder must be left.
+	private static final int STABILITY_STABLE = 0;
+	private static final int STABILITY_SKIPPED = 1;
+	private static final int STABILITY_STOPPED = 2;
 	private final ArrayList<String> receivedFiles = new ArrayList<String>();
 
 	public TransferGET(int destination)
@@ -128,6 +140,7 @@ public class TransferGET extends Thread
 		due = Instant.now();
 		localSafeFileMissing = false;
 		remoteSafeFileMissing = false;
+		remoteListingFailed = false;
 
 		if (Boolean.valueOf(settingsGet.enabled.data) == false)
 		{
@@ -304,8 +317,15 @@ public class TransferGET extends Thread
 					jcmd.writeToLog("Transfer abandoned, not connected - retried on the next poll", JLogPanel.ERROR);
 				}
 
-				//jcmd.disconnect();
+			}
 
+			// The session is closed between passes. One server may be polled by many copies of this
+			// program on long intervals, and a session left idle for a long poll is dropped by the
+			// network before the next pass - which then failed on the dead session and was reported
+			// as a missing safe file and a lost connection.
+			if (jcmd.isConnected())
+			{
+				jcmd.disconnect();
 			}
 		}
 
@@ -320,15 +340,17 @@ public class TransferGET extends Thread
 	 * One line at the end of a pass in which at least one file was received,
 	 * failed or skipped - a pass with nothing to do stays silent. A pass
 	 * which received something also goes to the Transfer list, with the
-	 * files named; failures are the Error list's business.
+	 * files named; failures are the Error list's business. A pass cut short
+	 * by a shutdown or a lost session reports the same way, marked as such.
 	 */
 	private void logPassSummary(Instant passStarted)
 	{
 		if ((receivedCount + failedCount + skippedCount) > 0)
 		{
 			String duration = JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis());
+			String outcome = passOutcome();
 
-			jcmd.writeToLog("Transfer finished - " + receivedCount + " received, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
+			jcmd.writeToLog("Transfer " + (outcome.isEmpty() ? "finished" : outcome.toLowerCase()) + " - " + receivedCount + " received, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
 
 			if (receivedCount > 0)
 			{
@@ -339,11 +361,54 @@ public class TransferGET extends Thread
 				detail.add("Failed   : " + failedCount);
 				detail.add("Skipped  : " + skippedCount);
 				detail.add("Duration : " + duration);
+
+				if (outcome.isEmpty() == false)
+				{
+					detail.add("Outcome  : " + outcome + " - the remaining files are fetched on the next poll");
+				}
+
 				Notify.appendFiles(detail, receivedFiles);
 
 				Notify.transfer(logDestination, "Files received", detail.toArray(new String[0]));
 			}
 		}
+	}
+
+	/**
+	 * Why a pass stopped early, or "" when it ran to the end. The session is
+	 * closed only after the summary, so a live session here means a normal
+	 * finish.
+	 */
+	private String passOutcome()
+	{
+		if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
+		{
+			return "Interrupted by shutdown";
+		}
+
+		if (getRequestMode() == Mode_PAUSE)
+		{
+			return "Paused from the window";
+		}
+
+		if (jcmd.isConnected() == false)
+		{
+			return "Abandoned, connection lost";
+		}
+
+		return "";
+	}
+
+	/**
+	 * True once a shutdown or a pause has been asked for. A pass stops at the
+	 * next file boundary rather than running to its end - the Run button in
+	 * the window reads as pressed the moment it is released, and the Stopped
+	 * email has already gone. The file in flight is finished first; each file
+	 * is atomic, so the rest simply waits for the next poll.
+	 */
+	private boolean stopRequested()
+	{
+		return (getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_PAUSE);
 	}
 
 	/**
@@ -394,7 +459,28 @@ public class TransferGET extends Thread
 		// The remote folder is listed because a server may answer a question about one file from a cache.
 		JschCommands.RemoteListing listing = jcmd.listFolder(settingsGet.remoteDir.data, false);
 
-		boolean present = (listing != null) && listing.hasFile(JSafeFile.remote);
+		if (listing == null)
+		{
+			// The folder could not be listed, so nothing is known about the safe file - this is not
+			// "safe file missing". A session found dead has already been reported by isConnected();
+			// any other reason is reported here.
+			if (jcmd.isConnected() && (remoteListingFailed == false))
+			{
+				jcmd.writeToLog("Remote folder could not be listed : " + settingsGet.remoteDir.data + " - " + jcmd.getLastError(), JLogPanel.ERROR);
+				Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + settingsGet.remoteDir.data, "Reason : " + jcmd.getLastError());
+				remoteListingFailed = true;
+			}
+
+			return null;
+		}
+
+		if (remoteListingFailed)
+		{
+			jcmd.writeToLog("Remote folder listed again : " + settingsGet.remoteDir.data, JLogPanel.INFO);
+			remoteListingFailed = false;
+		}
+
+		boolean present = listing.hasFile(JSafeFile.remote);
 
 		if (present)
 		{
@@ -446,7 +532,7 @@ public class TransferGET extends Thread
 		// again - a genuine fresh read, never the listing in hand - after the wait, just before the first
 		// file is fetched from it.
 		Instant listedAt = Instant.now();
-		HashMap<String, SftpATTRS> freshEntries = null;
+		freshEntries = null;
 
 		// This folder's local files and folders with no remote counterpart - removed once its files are in.
 		ArrayList<File> syncDeletions = new ArrayList<File>();
@@ -459,7 +545,7 @@ public class TransferGET extends Thread
 
 		for (ChannelSftp.LsEntry entry : fileNames)
 		{
-			if ((getRunMode() == Mode_SHUTDOWN) || (jcmd.isConnected() == false))
+			if (stopRequested() || (jcmd.isConnected() == false))
 			{
 				// A lost session is reported once the pass is over; the rest waits for the next poll.
 				return;
@@ -536,7 +622,15 @@ public class TransferGET extends Thread
 					}
 				}
 
-				if (isStable(entry, freshEntries.get(entry.getFilename()), relativeFile) == false)
+				int stability = checkStability(entry, remoteFolder, relativeFile);
+
+				if (stability == STABILITY_STOPPED)
+				{
+					// A shutdown, a pause or a failed re-listing during a retry wait - the rest waits for the next poll.
+					return;
+				}
+
+				if (stability == STABILITY_SKIPPED)
 				{
 					skippedCount++;
 					continue;
@@ -588,7 +682,7 @@ public class TransferGET extends Thread
 
 		if ((syncDeletions.size() + syncFolderDeletions.size()) > 0)
 		{
-			if (getRunMode() == Mode_SHUTDOWN)
+			if (stopRequested())
 			{
 				return;
 			}
@@ -623,7 +717,7 @@ public class TransferGET extends Thread
 		{
 			for (String folderName : listing.folders())
 			{
-				if (getRunMode() == Mode_SHUTDOWN)
+				if (stopRequested())
 				{
 					return;
 				}
@@ -662,7 +756,7 @@ public class TransferGET extends Thread
 	 * Stability check, part one: waits until the folder listing is the
 	 * configured number of seconds old. Done once per folder, just before the
 	 * first file is fetched from it, so a folder with nothing to fetch never
-	 * waits. Returns false if a shutdown arrived during the wait.
+	 * waits. Returns false if a shutdown or a pause arrived during the wait.
 	 */
 	private boolean awaitStability(Instant listedAt)
 	{
@@ -672,23 +766,34 @@ public class TransferGET extends Thread
 		{
 			jcmd.writeToLog("Stability check - waiting " + JFormat.seconds(waitMillis) + " before the first transfer", JLogPanel.INFO);
 
-			Instant until = Instant.now().plusMillis(waitMillis);
-
-			while (Instant.now().isBefore(until))
+			if (pauseFor(waitMillis) == false)
 			{
-				if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
-				{
-					return false;
-				}
+				return false;
+			}
+		}
 
-				try
-				{
-					Thread.sleep(100);
-				}
-				catch (InterruptedException e)
-				{
-					return false;
-				}
+		return true;
+	}
+
+	/** Sleeps for the given time in short steps; false if a shutdown or a pause arrived meanwhile. */
+	private boolean pauseFor(long waitMillis)
+	{
+		Instant until = Instant.now().plusMillis(waitMillis);
+
+		while (Instant.now().isBefore(until))
+		{
+			if (stopRequested())
+			{
+				return false;
+			}
+
+			try
+			{
+				Thread.sleep(100);
+			}
+			catch (InterruptedException e)
+			{
+				return false;
 			}
 		}
 
@@ -697,24 +802,63 @@ public class TransferGET extends Thread
 
 	/**
 	 * Stability check, part two: a file whose size or modified time differs
-	 * between the two listings (or which has gone) is still being written, so
-	 * it is left for the next poll - nothing is fetched or removed.
+	 * between the two listings is still being written. It is given up to
+	 * Retries more waits of the stability seconds, the folder listed afresh
+	 * after each; one still changing after the last wait (or which has gone)
+	 * is left for the next poll - nothing is fetched or removed. Every
+	 * re-listing replaces freshEntries, so the files after it in the folder
+	 * are judged against the newest picture.
 	 */
-	private boolean isStable(ChannelSftp.LsEntry before, SftpATTRS after, String remoteFile)
+	private int checkStability(ChannelSftp.LsEntry entry, String remoteFolder, String remoteFile)
 	{
-		if ((after == null) || after.isDir())
-		{
-			jcmd.writeToLog("Skipped, no longer there : " + remoteFile, JLogPanel.WARN);
-			return false;
-		}
+		SftpATTRS before = entry.getAttrs();
+		int retries = stabilityRetries();
 
-		if ((before.getAttrs().getSize() != after.getSize()) || (before.getAttrs().getMTime() != after.getMTime()))
+		for (int attempt = 0;; attempt++)
 		{
-			jcmd.writeToLog("Skipped, still changing : " + remoteFile + " (" + JFormat.bytes(before.getAttrs().getSize()) + " -> " + JFormat.bytes(after.getSize()) + ") - retried on the next poll", JLogPanel.WARN);
-			return false;
-		}
+			SftpATTRS after = freshEntries.get(entry.getFilename());
 
-		return true;
+			if ((after == null) || after.isDir())
+			{
+				jcmd.writeToLog("Skipped, no longer there : " + remoteFile, JLogPanel.WARN);
+				return STABILITY_SKIPPED;
+			}
+
+			if ((before.getSize() == after.getSize()) && (before.getMTime() == after.getMTime()))
+			{
+				return STABILITY_STABLE;
+			}
+
+			String sizes = JFormat.bytes(before.getSize()) + " -> " + JFormat.bytes(after.getSize());
+
+			if (attempt >= retries)
+			{
+				jcmd.writeToLog("Skipped, still changing : " + remoteFile + " (" + sizes + ")" + (retries > 0 ? " after " + retries + (retries == 1 ? " retry" : " retries") : "") + " - retried on the next poll", JLogPanel.WARN);
+				return STABILITY_SKIPPED;
+			}
+
+			long waitMillis = stabilitySeconds() * 1000L;
+
+			jcmd.writeToLog("Still changing : " + remoteFile + " (" + sizes + ") - waiting " + JFormat.seconds(waitMillis) + " again, retry " + (attempt + 1) + " of " + retries, JLogPanel.INFO);
+
+			before = after;
+
+			if ((pauseFor(waitMillis) == false) || (jcmd.isConnected() == false))
+			{
+				return STABILITY_STOPPED;
+			}
+
+			HashMap<String, SftpATTRS> relisted = jcmd.lsEntries(remoteFolder);
+
+			if (relisted == null)
+			{
+				jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
+				Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
+				return STABILITY_STOPPED;
+			}
+
+			freshEntries = relisted;
+		}
 	}
 
 	private int stabilitySeconds()
@@ -722,6 +866,18 @@ public class TransferGET extends Thread
 		try
 		{
 			return Math.max(1, Integer.parseInt(settingsGet.stabilitySeconds.data.trim()));
+		}
+		catch (Exception e)
+		{
+			return 5;
+		}
+	}
+
+	private int stabilityRetries()
+	{
+		try
+		{
+			return Math.max(0, Integer.parseInt(settingsGet.stabilityRetries.data.trim()));
 		}
 		catch (Exception e)
 		{

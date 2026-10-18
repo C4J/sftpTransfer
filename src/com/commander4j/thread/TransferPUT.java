@@ -82,11 +82,19 @@ public class TransferPUT extends Thread
 	private boolean localSafeFileMissing = false;
 	private boolean remoteSafeFileMissing = false;
 
+	// One "could not be listed" report per failure, not one per poll - like the safe file above.
+	private boolean remoteListingFailed = false;
+
 	// Stability check: the size and modified time of every candidate file as it was found,
 	// and when. The wait runs once per pass, just before the first file is sent.
 	private HashMap<File, long[]> stabilitySnapshot = new HashMap<File, long[]>();
 	private Instant collectedAt = Instant.now();
 	private boolean stabilityWaited = false;
+
+	// What checkStability found: the file can go, the file is left for the next poll, or the pass must stop.
+	private static final int STABILITY_STABLE = 0;
+	private static final int STABILITY_SKIPPED = 1;
+	private static final int STABILITY_STOPPED = 2;
 
 	// The local folder whose heading has been written this pass - see announceFolder().
 	private String announcedFolder = null;
@@ -139,6 +147,7 @@ public class TransferPUT extends Thread
 		due = Instant.now();
 		localSafeFileMissing = false;
 		remoteSafeFileMissing = false;
+		remoteListingFailed = false;
 
 		if (Boolean.valueOf(settingsPut.enabled.data) == false)
 		{
@@ -344,7 +353,28 @@ public class TransferPUT extends Thread
 		// The remote folder is listed because a server may answer a question about one file from a cache.
 		JschCommands.RemoteListing listing = jcmd.listFolder(settingsPut.remoteDir.data, false);
 
-		boolean present = (listing != null) && listing.hasFile(JSafeFile.remote);
+		if (listing == null)
+		{
+			// The folder could not be listed, so nothing is known about the safe file - this is not
+			// "safe file missing". A session found dead has already been reported by isConnected();
+			// any other reason is reported here.
+			if (jcmd.isConnected() && (remoteListingFailed == false))
+			{
+				jcmd.writeToLog("Remote folder could not be listed : " + settingsPut.remoteDir.data + " - " + jcmd.getLastError(), JLogPanel.ERROR);
+				Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + settingsPut.remoteDir.data, "Reason : " + jcmd.getLastError());
+				remoteListingFailed = true;
+			}
+
+			return null;
+		}
+
+		if (remoteListingFailed)
+		{
+			jcmd.writeToLog("Remote folder listed again : " + settingsPut.remoteDir.data, JLogPanel.INFO);
+			remoteListingFailed = false;
+		}
+
+		boolean present = listing.hasFile(JSafeFile.remote);
 
 		if (present)
 		{
@@ -504,14 +534,17 @@ public class TransferPUT extends Thread
 
 					for (File sourceFile : folder.getValue())
 					{
-						if (getRunMode() == Mode_SHUTDOWN)
+						if (stopRequested())
 						{
+							// What was sent before the stop is still reported.
+							logPassSummary(passStarted);
 							return;
 						}
 
 						if (jcmd.isConnected() == false)
 						{
 							// The session has gone part way through - the rest waits for the next poll and a new connection.
+							logPassSummary(passStarted);
 							jcmd.writeToLog("Transfer abandoned, not connected - remaining files are retried on the next poll", JLogPanel.ERROR);
 							return;
 						}
@@ -553,10 +586,20 @@ public class TransferPUT extends Thread
 						{
 							if (awaitStability() == false)
 							{
+								logPassSummary(passStarted);
 								return;
 							}
 
-							if (isStable(sourceFile, relativeFile) == false)
+							int stability = checkStability(sourceFile, relativeFile);
+
+							if (stability == STABILITY_STOPPED)
+							{
+								// A shutdown or a pause arrived during a retry wait - what was sent before it is still reported.
+								logPassSummary(passStarted);
+								return;
+							}
+
+							if (stability == STABILITY_SKIPPED)
 							{
 								skippedCount++;
 								continue;
@@ -655,8 +698,9 @@ public class TransferPUT extends Thread
 
 					if ((syncDeletions.size() + syncFolderDeletions.size()) > 0)
 					{
-						if (getRunMode() == Mode_SHUTDOWN)
+						if (stopRequested())
 						{
+							logPassSummary(passStarted);
 							return;
 						}
 
@@ -687,7 +731,12 @@ public class TransferPUT extends Thread
 				logPassSummary(passStarted);
 
 			}
-			//jcmd.disconnect();
+
+			// The session is closed between passes - see TransferGET.transferRemoteToLocal.
+			if (jcmd.isConnected())
+			{
+				jcmd.disconnect();
+			}
 
 		}
 
@@ -713,15 +762,18 @@ public class TransferPUT extends Thread
 	 * One line at the end of a pass in which at least one file was sent,
 	 * failed or skipped - a pass with nothing to do stays silent. A pass
 	 * which sent something also goes to the Transfer list, with the files
-	 * named; failures are the Error list's business.
+	 * named; failures are the Error list's business. A pass cut short by a
+	 * shutdown or a lost session reports the same way, marked as such - the
+	 * files it did send are not lost from the record.
 	 */
 	private void logPassSummary(Instant passStarted)
 	{
 		if ((sentCount + failedCount + skippedCount) > 0)
 		{
 			String duration = JFormat.seconds(Duration.between(passStarted, Instant.now()).toMillis());
+			String outcome = passOutcome();
 
-			jcmd.writeToLog("Transfer finished - " + sentCount + " sent, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
+			jcmd.writeToLog("Transfer " + (outcome.isEmpty() ? "finished" : outcome.toLowerCase()) + " - " + sentCount + " sent, " + failedCount + " failed, " + skippedCount + " skipped in " + duration, JLogPanel.INFO);
 
 			if (sentCount > 0)
 			{
@@ -732,6 +784,12 @@ public class TransferPUT extends Thread
 				detail.add("Failed   : " + failedCount);
 				detail.add("Skipped  : " + skippedCount);
 				detail.add("Duration : " + duration);
+
+				if (outcome.isEmpty() == false)
+				{
+					detail.add("Outcome  : " + outcome + " - the remaining files are sent on the next poll");
+				}
+
 				Notify.appendFiles(detail, sentFiles);
 
 				Notify.transfer(logDestination, "Files sent", detail.toArray(new String[0]));
@@ -740,10 +798,47 @@ public class TransferPUT extends Thread
 	}
 
 	/**
+	 * Why a pass stopped early, or "" when it ran to the end. The session is
+	 * closed only after the summary, so a live session here means a normal
+	 * finish.
+	 */
+	private String passOutcome()
+	{
+		if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
+		{
+			return "Interrupted by shutdown";
+		}
+
+		if (getRequestMode() == Mode_PAUSE)
+		{
+			return "Paused from the window";
+		}
+
+		if (jcmd.isConnected() == false)
+		{
+			return "Abandoned, connection lost";
+		}
+
+		return "";
+	}
+
+	/**
+	 * True once a shutdown or a pause has been asked for. A pass stops at the
+	 * next file boundary rather than running to its end - the Run button in
+	 * the window reads as pressed the moment it is released, and the Stopped
+	 * email has already gone. The file in flight is finished first; each file
+	 * is atomic, so the rest simply waits for the next poll.
+	 */
+	private boolean stopRequested()
+	{
+		return (getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_PAUSE);
+	}
+
+	/**
 	 * Stability check, part one: the files were sized and timed as they were
 	 * collected; this waits until that was the configured number of seconds
 	 * ago. Done once per pass, just before the first transfer, so a pass
-	 * with nothing to send never waits. Returns false if a shutdown arrived
+	 * with nothing to send never waits. Returns false if a shutdown or a pause arrived
 	 * during the wait.
 	 */
 	private boolean awaitStability()
@@ -758,24 +853,35 @@ public class TransferPUT extends Thread
 			{
 				jcmd.writeToLog("Stability check - waiting " + JFormat.seconds(waitMillis) + " before the first transfer", JLogPanel.INFO);
 
-				Instant until = Instant.now().plusMillis(waitMillis);
-
-				while (Instant.now().isBefore(until))
+				if (pauseFor(waitMillis) == false)
 				{
-					if ((getRunMode() == Mode_SHUTDOWN) || (getRequestMode() == Mode_SHUTDOWN))
-					{
-						return false;
-					}
-
-					try
-					{
-						Thread.sleep(100);
-					}
-					catch (InterruptedException e)
-					{
-						return false;
-					}
+					return false;
 				}
+			}
+		}
+
+		return true;
+	}
+
+	/** Sleeps for the given time in short steps; false if a shutdown or a pause arrived meanwhile. */
+	private boolean pauseFor(long waitMillis)
+	{
+		Instant until = Instant.now().plusMillis(waitMillis);
+
+		while (Instant.now().isBefore(until))
+		{
+			if (stopRequested())
+			{
+				return false;
+			}
+
+			try
+			{
+				Thread.sleep(100);
+			}
+			catch (InterruptedException e)
+			{
+				return false;
 			}
 		}
 
@@ -784,30 +890,51 @@ public class TransferPUT extends Thread
 
 	/**
 	 * Stability check, part two: a file whose size or modified time differs
-	 * from when it was collected (or which has gone) is still being written,
-	 * so it is left for the next poll - no backup, no upload, no delete.
+	 * from when it was collected is still being written. It is given up to
+	 * Retries more waits of the stability seconds, each measured from a fresh
+	 * size and time; one that is still changing after the last wait (or which
+	 * has gone) is left for the next poll - no backup, no upload, no delete.
 	 */
-	private boolean isStable(File sourceFile, String relativeFile)
+	private int checkStability(File sourceFile, String relativeFile)
 	{
 		long[] before = stabilitySnapshot.get(sourceFile);
+		int retries = stabilityRetries();
 
-		if (sourceFile.isFile() == false)
+		for (int attempt = 0;; attempt++)
 		{
-			jcmd.writeToLog("Skipped, no longer there : " + relativeFile, JLogPanel.WARN);
-			return false;
-		}
+			if (sourceFile.isFile() == false)
+			{
+				jcmd.writeToLog("Skipped, no longer there : " + relativeFile, JLogPanel.WARN);
+				return STABILITY_SKIPPED;
+			}
 
-		long size = sourceFile.length();
-		long modified = sourceFile.lastModified();
+			long size = sourceFile.length();
+			long modified = sourceFile.lastModified();
 
-		if ((before == null) || (before[0] != size) || (before[1] != modified))
-		{
+			if ((before != null) && (before[0] == size) && (before[1] == modified))
+			{
+				return STABILITY_STABLE;
+			}
+
 			String sizes = (before == null) ? JFormat.bytes(size) : JFormat.bytes(before[0]) + " -> " + JFormat.bytes(size);
-			jcmd.writeToLog("Skipped, still changing : " + relativeFile + " (" + sizes + ") - retried on the next poll", JLogPanel.WARN);
-			return false;
-		}
 
-		return true;
+			if (attempt >= retries)
+			{
+				jcmd.writeToLog("Skipped, still changing : " + relativeFile + " (" + sizes + ")" + (retries > 0 ? " after " + retries + (retries == 1 ? " retry" : " retries") : "") + " - retried on the next poll", JLogPanel.WARN);
+				return STABILITY_SKIPPED;
+			}
+
+			long waitMillis = stabilitySeconds() * 1000L;
+
+			jcmd.writeToLog("Still changing : " + relativeFile + " (" + sizes + ") - waiting " + JFormat.seconds(waitMillis) + " again, retry " + (attempt + 1) + " of " + retries, JLogPanel.INFO);
+
+			before = new long[] { size, modified };
+
+			if (pauseFor(waitMillis) == false)
+			{
+				return STABILITY_STOPPED;
+			}
+		}
 	}
 
 	private int stabilitySeconds()
@@ -815,6 +942,18 @@ public class TransferPUT extends Thread
 		try
 		{
 			return Math.max(1, Integer.parseInt(settingsPut.stabilitySeconds.data.trim()));
+		}
+		catch (Exception e)
+		{
+			return 5;
+		}
+	}
+
+	private int stabilityRetries()
+	{
+		try
+		{
+			return Math.max(0, Integer.parseInt(settingsPut.stabilityRetries.data.trim()));
 		}
 		catch (Exception e)
 		{

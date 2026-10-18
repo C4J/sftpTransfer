@@ -316,7 +316,8 @@ public class EmailThread extends Thread
 
 		MimeBodyPart mimeBodyPart = new MimeBodyPart();
 
-		mimeBodyPart.setText(body, "utf-8");
+		// The body is the HTML table Notify builds.
+		mimeBodyPart.setContent(body, "text/html; charset=utf-8");
 
 		Multipart multipart = new MimeMultipart();
 		multipart.addBodyPart(mimeBodyPart);

@@ -21,6 +21,8 @@ public class SettingsPut
 	// Wait, then re-check size and time, before sending a file - a file still being written is left for the next poll.
 	public SettingData stabilityCheckEnabled =new SettingData("false","false");
 	public SettingData stabilitySeconds =new SettingData("5","false");
+	// How many more waits a file still changing after the first one is given before it is left for the next poll.
+	public SettingData stabilityRetries =new SettingData("5","false");
 	
 	public SettingData backupEnabled =new SettingData("","false");
 	public SettingData backupDir =new SettingData("","false");
