@@ -616,8 +616,16 @@ public class TransferGET extends Thread
 
 					if (freshEntries == null)
 					{
-						jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
-						Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
+						// A dead session is reported by isConnected() alone; any other reason is the folder's.
+						if (jcmd.isConnected())
+						{
+							jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
+							Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
+						}
+						else
+						{
+							jcmd.writeToLog("Stability check abandoned, connection lost : " + remoteFolder + " - retried on the next poll", JLogPanel.WARN);
+						}
 						return;
 					}
 				}
@@ -852,8 +860,16 @@ public class TransferGET extends Thread
 
 			if (relisted == null)
 			{
-				jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
-				Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
+				// A dead session is reported by isConnected() alone; any other reason is the folder's.
+				if (jcmd.isConnected())
+				{
+					jcmd.writeToLog("Stability check abandoned, folder could not be listed again : " + remoteFolder + " - retried on the next poll", JLogPanel.ERROR);
+					Notify.error(logDestination, "Remote folder could not be listed", "Folder : " + remoteFolder, "Reason : " + jcmd.getLastError());
+				}
+				else
+				{
+					jcmd.writeToLog("Stability check abandoned, connection lost : " + remoteFolder + " - retried on the next poll", JLogPanel.WARN);
+				}
 				return STABILITY_STOPPED;
 			}
 

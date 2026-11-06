@@ -62,6 +62,17 @@ public final class Notify
 	}
 
 	/**
+	 * The end of an error condition one direction reported earlier (a
+	 * connection back after an outage); the list is "Error", so the people
+	 * who saw the failure see the recovery, but it is not counted as an
+	 * error in the daily statistics.
+	 */
+	public static void recovered(int logDestination, String event, String... detail)
+	{
+		send(LIST_ERROR, direction(logDestination) + event, detail);
+	}
+
+	/**
 	 * The files one direction sent or received in a pass; the list is
 	 * "Transfer". Sent only when the list exists and is enabled - a quiet
 	 * skip, not the error or warning the other lists get, because most

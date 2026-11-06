@@ -2,8 +2,13 @@ package com.commander4j.jsch;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -21,10 +26,12 @@ import com.commander4j.log.JLogPanel;
 import com.commander4j.settings.SettingsCommon;
 import com.commander4j.sftp.Start;
 import com.commander4j.util.JFileMask;
+import com.commander4j.util.JFormat;
 import com.commander4j.web.LogHub;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.ChannelSftp.LsEntry;
 import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.JSchUnknownHostKeyException;
 import com.jcraft.jsch.Session;
 import com.jcraft.jsch.SftpATTRS;
@@ -61,8 +68,11 @@ public class JschCommands
 	// The reason of the last failed command, for the transfer threads' error emails.
 	private volatile String lastError = "";
 
-	// One "Connection failed" email per outage, whatever the list's frequency limit.
+	// One "Connection failed" email per outage, whatever the list's frequency limit, and one
+	// "Connection restored" when the next connection succeeds - the outage's two ends.
 	private boolean connectFailedReported = false;
+	private Instant connectFailedSince = null;
+	private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
 	public String getLastError()
 	{
@@ -98,6 +108,75 @@ public class JschCommands
 		}
 	}
 
+	/**
+	 * Whether a listing failed because the link died under it rather than
+	 * because of the folder. JSch wraps the transport's IOException (or its
+	 * own JSchException) in an SFTP failure and only learns that the session
+	 * is down a moment later, so isConnected() cannot be trusted in the
+	 * instant after the exception - the overnight "inputstream is closed"
+	 * listing was emailed, then Connection lost a moment after it.
+	 */
+	private static boolean linkDied(SftpException e)
+	{
+		Throwable cause = e.getCause();
+
+		return (cause instanceof IOException) || (cause instanceof JSchException);
+	}
+
+	/**
+	 * Remembers why a listing failed and, when the link itself died, drops
+	 * the session now instead of when JSch notices - isConnected() then
+	 * reports the lost connection once, as for any other dead session, and
+	 * the callers' isConnected() tests see the truth.
+	 */
+	private void listingFailed(SftpException e)
+	{
+		lastError = reason(e);
+
+		if (linkDied(e))
+		{
+			try
+			{
+				if (channel != null)
+				{
+					channel.disconnect();
+				}
+
+				if (jschSession != null)
+				{
+					jschSession.disconnect();
+				}
+			}
+			catch (Exception ignored)
+			{
+			}
+
+			isConnected();
+		}
+	}
+
+	/**
+	 * A listing which failed and is to be reported. A dead link is one event,
+	 * not two: the listing is only logged and Connection lost is the report.
+	 * Any other reason is reported as the folder's.
+	 */
+	private void listingFailed(String command, String path, SftpException e)
+	{
+		boolean died = linkDied(e);
+
+		listingFailed(e);
+
+		if (died || (isConnected() == false))
+		{
+			writeToLog(command + " failed - " + lastError + " (connection lost)", JLogPanel.WARN);
+		}
+		else
+		{
+			writeToLog(command + " failed - " + lastError, JLogPanel.ERROR);
+			notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
+		}
+	}
+
 	private void connectFailed(Exception e)
 	{
 		lastError = reason(e);
@@ -107,8 +186,38 @@ public class JschCommands
 		if (connectFailedReported == false)
 		{
 			connectFailedReported = true;
+			connectFailedSince = Instant.now();
 			notifyError("Connection failed", "Host : " + hostLabel(), "User : " + settingsCommon.username.data, "Reason : " + lastError);
 		}
+		else if ((defaultLogDestination == LogDestination_PUT) || (defaultLogDestination == LogDestination_GET))
+		{
+			// The skip is otherwise invisible: the frequency limit logs its own "suppressed" line, this latch did not.
+			writeToLog("Connection failed email not sent - this outage was already reported (Connection failed or Connection lost), a Connection restored email follows the next successful connection", JLogPanel.WARN);
+		}
+	}
+
+	/**
+	 * The first successful connection after a reported failure or lost
+	 * connection: the outage's closing bracket, on the same list as the
+	 * failure, with the time it was first reported and how long the link
+	 * was down.
+	 */
+	private void connectionRestored()
+	{
+		Instant since = (connectFailedSince == null) ? Instant.now() : connectFailedSince;
+		long downMillis = Math.max(0, Instant.now().toEpochMilli() - since.toEpochMilli());
+		String sinceStamp = LocalDateTime.ofInstant(since, ZoneOffset.UTC).format(STAMP) + " UTC";
+		String down = JFormat.duration(downMillis);
+
+		writeToLog("Connection to " + hostLabel() + " restored - down since " + sinceStamp + " (" + down + ")", JLogPanel.INFO);
+
+		if ((defaultLogDestination == LogDestination_PUT) || (defaultLogDestination == LogDestination_GET))
+		{
+			Notify.recovered(defaultLogDestination, "Connection restored", "Host : " + hostLabel(), "User : " + settingsCommon.username.data, "Down since : " + sinceStamp, "Outage : " + down);
+		}
+
+		connectFailedReported = false;
+		connectFailedSince = null;
 	}
 
 	/**
@@ -289,7 +398,10 @@ public class JschCommands
 
 				writeToLog("Connected to " + hostLabel() + " (server " + jschSession.getServerVersion() + ")", JLogPanel.INFO);
 
-				connectFailedReported = false;
+				if (connectFailedReported)
+				{
+					connectionRestored();
+				}
 
 				result = true;
 			}
@@ -421,6 +533,15 @@ public class JschCommands
 			sessionOpen = false;
 			writeToLog("Connection to " + hostLabel() + " lost", JLogPanel.WARN);
 			notifyError("Connection lost", "Host : " + hostLabel());
+
+			// The outage is open from here, like a failed connect: a connect which then fails is
+			// not emailed again, and the first successful one sends Connection restored with
+			// this moment as its Down since.
+			if (connectFailedReported == false)
+			{
+				connectFailedReported = true;
+				connectFailedSince = Instant.now();
+			}
 		}
 
 		return result;
@@ -822,9 +943,7 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				lastError = reason(e);
-				writeToLog("ls " + path + "/" + mask + " failed - " + lastError, JLogPanel.ERROR);
-				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
+				listingFailed("ls " + path + "/" + mask, path, e);
 			}
 		}
 
@@ -870,9 +989,7 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				lastError = reason(e);
-				writeToLog(command + " failed - " + lastError, JLogPanel.ERROR);
-				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
+				listingFailed(command, path, e);
 			}
 		}
 
@@ -910,9 +1027,7 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				lastError = reason(e);
-				writeToLog("ls " + path + " failed - " + lastError, JLogPanel.ERROR);
-				notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
+				listingFailed("ls " + path, path, e);
 			}
 		}
 
@@ -1082,12 +1197,13 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				lastError = reason(e);
-
 				if (logFailure)
 				{
-					writeToLog("ls " + path + " failed - " + lastError, JLogPanel.ERROR);
-					notifyError("Remote folder could not be listed", "Folder : " + path, "Reason : " + lastError);
+					listingFailed("ls " + path, path, e);
+				}
+				else
+				{
+					listingFailed(e);
 				}
 
 				result = null;
@@ -1129,7 +1245,7 @@ public class JschCommands
 			}
 			catch (SftpException e)
 			{
-				lastError = reason(e);
+				listingFailed(e);
 				result = null;
 			}
 		}

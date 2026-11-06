@@ -1980,7 +1980,7 @@ public class JFrameSFTPTransfer extends JFrame
 		if (colour != null)
 		{
 			// Nimbus paints the filled part with these painters, sized to the filled width.
-			Painter<JProgressBar> fill = (g, b, w, h) -> {
+			Painter<JProgressBar> fill = (g, _, w, h) -> {
 				g.setPaint(new GradientPaint(0, 0, colour.brighter(), 0, h, colour));
 				g.fillRoundRect(0, 0, w, h, 5, 5);
 			};
